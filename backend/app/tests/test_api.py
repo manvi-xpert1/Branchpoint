@@ -108,6 +108,10 @@ def test_mvp_acceptance_workflow(client, imported):
     assert cmp["best"]["affected_components"] == [replica_run]
     assert cmp["best"]["cost"] == [cmp["runs"][0]["id"]]
 
+    # The run reports the system as simulated, including added components.
+    replica_full = client.get(f"/api/runs/{replica_run}").json()
+    assert "postgres_replica" in {c["id"] for c in replica_full["system"]["components"]}
+
     # Runs are stored and listed.
     assert len(client.get(f"/api/scenarios/{db_down['id']}/runs").json()) == 2
 

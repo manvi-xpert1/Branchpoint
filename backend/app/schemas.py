@@ -169,6 +169,8 @@ class RunSummary(_Model):
 
 
 class RunOut(RunSummary):
+    # The system as simulated: base snapshot with interventions applied.
+    system: dict[str, Any]
     skipped_events: list[str]
     # component -> [[time, status], ...] for drawing the timeline / graph playback
     timelines: dict[str, list[tuple[float, str]]]

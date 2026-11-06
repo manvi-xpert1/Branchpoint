@@ -1,0 +1,83 @@
+{
+  "until": 30,
+  "system": {
+    "id": "sys_001",
+    "name": "E-commerce Infrastructure",
+    "domain": "software_infrastructure",
+    "components": [
+      {"id": "api_gateway", "name": "API Gateway", "type": "gateway", "entry_point": true,
+       "attributes": {"capacity": 1000, "current_load": 600}},
+      {"id": "user_service", "name": "User Service", "type": "service",
+       "attributes": {"capacity": 800, "current_load": 500}},
+      {"id": "postgres", "name": "PostgreSQL", "type": "database",
+       "attributes": {"capacity": 1000, "current_load": 650, "recovery_time": 10}},
+      {"id": "redis", "name": "Redis Cache", "type": "cache",
+       "attributes": {"capacity": 5000, "current_load": 1200}}
+    ],
+    "dependencies": [
+      {"id": "gw->users", "source_id": "api_gateway", "target_id": "user_service",
+       "dependency_type": "requires", "propagation_delay": 1},
+      {"id": "users->db", "source_id": "user_service", "target_id": "postgres",
+       "dependency_type": "requires", "group": "user_data", "propagation_delay": 1},
+      {"id": "users->cache", "source_id": "user_service", "target_id": "redis",
+       "dependency_type": "optional", "propagation_delay": 0}
+    ]
+  },
+  "scenarios": [
+    {
+      "id": "baseline",
+      "name": "Baseline (no incidents)",
+      "events": []
+    },
+    {
+      "id": "db-down",
+      "name": "DB fails, no intervention",
+      "parent": "baseline",
+      "events": [
+        {"id": "db_failure", "type": "component_failure", "target_id": "postgres", "start_time": 5}
+      ]
+    },
+    {
+      "id": "db-down-cache-fallback",
+      "name": "DB fails + cache fallback",
+      "parent": "db-down",
+      "interventions": [
+        {"id": "enable_cache_fallback", "type": "add_dependency", "cost": 50,
+         "description": "Serve user reads from Redis when Postgres is down",
+         "params": {"id": "users->cache-fallback", "source_id": "user_service", "target_id": "redis",
+                    "dependency_type": "fallback", "group": "user_data", "propagation_delay": 1}}
+      ]
+    },
+    {
+      "id": "db-down-replica",
+      "name": "DB fails + read replica",
+      "parent": "db-down",
+      "interventions": [
+        {"id": "add_replica", "type": "add_component", "cost": 300,
+         "description": "Provision a Postgres read replica",
+         "params": {"id": "postgres_replica", "name": "PostgreSQL Replica", "type": "database",
+                    "attributes": {"capacity": 1000, "current_load": 300}}},
+        {"id": "use_replica", "type": "add_dependency", "cost": 0,
+         "params": {"id": "users->replica", "source_id": "user_service", "target_id": "postgres_replica",
+                    "dependency_type": "requires", "group": "user_data", "propagation_delay": 1}}
+      ]
+    },
+    {
+      "id": "db-down-fast-restore",
+      "name": "DB fails + fast restore at t=8",
+      "parent": "db-down",
+      "events": [
+        {"id": "manual_restore", "type": "component_recovery", "target_id": "postgres", "start_time": 8}
+      ]
+    },
+    {
+      "id": "traffic-spike",
+      "name": "2x traffic spike on gateway",
+      "parent": "baseline",
+      "events": [
+        {"id": "spike", "type": "traffic_spike", "target_id": "api_gateway", "start_time": 10,
+         "duration": 5, "severity": 2.0}
+      ]
+    }
+  ]
+}

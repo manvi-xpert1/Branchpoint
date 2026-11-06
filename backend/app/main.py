@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from .api import scenarios, simulations, systems
 from .database import Database
@@ -54,7 +55,29 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     for module in (systems, scenarios, simulations):
         app.include_router(module.router, prefix="/api")
+    _serve_frontend(app)
     return app
+
+
+def _serve_frontend(app: FastAPI) -> None:
+    """Serve the built React app (frontend/dist) if it exists.
+
+    In development the Vite dev server serves the frontend instead.
+    Unknown paths return index.html so client-side routes work on reload.
+    """
+    default = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    dist = Path(os.environ.get("FRONTEND_DIR", default)).resolve()
+    if not (dist / "index.html").is_file():
+        return
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def spa(path: str) -> FileResponse:
+        if path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        file = (dist / path).resolve()
+        if path and file.is_file() and file.is_relative_to(dist):
+            return FileResponse(file)
+        return FileResponse(dist / "index.html")
 
 
 app = create_app()

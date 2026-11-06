@@ -3,32 +3,69 @@
 Model an interconnected system, introduce failures, simulate how they spread,
 and compare different decisions before applying them in the real world.
 
-**Status:** Week 6 complete. The simulation engine, REST API and PostgreSQL
-persistence work. The frontend comes next.
+**Status:** Week 8 complete. You can design systems visually, build scenarios, watch
+failures spread, and compare decisions in the browser.
+
+![Playback of a database failure, with the root-cause chain](docs/screenshots/playback.png)
+
+## What you can do
+
+| Screen | What it does |
+|---|---|
+| **Systems** | List, create, delete; load the built-in example; import an experiment JSON file |
+| **Design** | Drag-and-drop graph editor (React Flow): add components, connect dependencies, edit attributes, live validation, cycle and blast-radius highlighting, JSON mode, export |
+| **Scenarios** | Scenario tree with branching; events with timing, duration, load multiplier and probability; interventions with one-click *replica* and *fallback* presets |
+| **Playback** | The graph coloured by status over time, play/scrub/step controls, per-component timeline lanes, event log, click any entry to see *why it happened*, replay verification |
+| **Compare** | Run scenarios side by side, with the best value per metric highlighted and a downtime vs degraded chart |
+
+| Design | Scenario builder | Compare |
+|---|---|---|
+| ![](docs/screenshots/designer.png) | ![](docs/screenshots/scenario-builder.png) | ![](docs/screenshots/compare.png) |
 
 ## Quick start
 
-### Option A: Docker (API + PostgreSQL in one command)
+### Option A: Docker (everything in one command)
 
 ```bash
 docker compose up --build
 ```
 
-Open http://localhost:8000/docs for interactive API docs.
+Open **http://localhost:8000** for the app, or http://localhost:8000/docs for the API.
 
-### Option B: plain Python (no database server needed; uses a local SQLite file)
+### Option B: run locally for development
+
+Backend (terminal 1). With no `DATABASE_URL` it uses a local SQLite file:
 
 ```bash
 cd backend
 python -m venv .venv
 .venv\Scripts\activate          # Windows  (macOS/Linux: source .venv/bin/activate)
 pip install -r requirements.txt
-python -m pytest                  # 55 tests
-uvicorn app.main:app --reload     # http://localhost:8000/docs
+uvicorn app.main:app --reload     # http://localhost:8000
+```
+
+Frontend (terminal 2), with hot reload; it proxies `/api` to the backend:
+
+```bash
+cd frontend
+npm install
+npm run dev                       # http://localhost:5173
 ```
 
 Set `DATABASE_URL` to use PostgreSQL instead of SQLite:
 `postgresql+psycopg://branchpoint:branchpoint@localhost:5432/branchpoint`
+
+### Tests
+
+```bash
+cd backend && python -m pytest          # 55 engine + API tests
+cd frontend && npm test                 # 13 unit tests (layout, timelines, presets)
+cd frontend && npx tsc -b               # type check
+```
+
+End-to-end (optional): with the app running on :8000, run
+`npm i -D playwright && npx playwright install chromium && npm run e2e`.
+It clicks through the full workflow in a real browser and saves screenshots.
 
 ### Command-line runner (engine only, no server)
 
@@ -123,6 +160,13 @@ backend/app/
   config.py        load an experiment JSON file
   cli.py           command-line runner
 examples/ecommerce.json   the section-12 test system with 6 scenarios
+
+frontend/src/
+  api/             typed API client + types mirroring backend schemas
+  pages/           Projects, Design, Scenarios, Run (playback), Compare
+  components/      graph node/edge rendering, inspectors, scenario forms
+  lib/             pure logic with unit tests: layout, timeline, presets
+frontend/e2e/smoke.mjs    Playwright end-to-end workflow test
 ```
 
 ## How the simulation works
@@ -179,6 +223,6 @@ runs on that copy, so branches never affect each other.
 ## Next steps (roadmap)
 
 - ~~Week 6: FastAPI endpoints plus PostgreSQL persistence~~ ✅
-- Weeks 7–8: React + React Flow editor, scenario builder, timeline view
+- ~~Weeks 7–8: React + React Flow editor, scenario builder, playback, comparison~~ ✅
 - Week 9: Monte Carlo runs (repeated seeds, expected and p95 downtime)
 - Week 10: benchmarks on synthetic graphs, docs, demo

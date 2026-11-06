@@ -1,4 +1,5 @@
 # Start everything:   docker compose up --build
+# App:                http://localhost:8000
 # API docs:           http://localhost:8000/docs
 services:
   db:
@@ -17,8 +18,8 @@ services:
       timeout: 3s
       retries: 15
 
-  backend:
-    build: ./backend
+  app:
+    build: .
     environment:
       DATABASE_URL: postgresql+psycopg://branchpoint:branchpoint@db:5432/branchpoint
       CORS_ORIGINS: http://localhost:5173

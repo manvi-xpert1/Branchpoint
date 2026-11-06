@@ -99,9 +99,18 @@ def to_summary(row: SimulationRunRow) -> RunSummary:
     )
 
 
+def effective_system(row: SimulationRunRow) -> dict:
+    """The run's system snapshot with its interventions applied."""
+    system = System.from_dict(row.system_snapshot)
+    for data in row.scenario_snapshot.get("interventions", []):
+        Intervention.from_dict(data).apply(system)
+    return system.to_dict()
+
+
 def to_schema(row: SimulationRunRow) -> RunOut:
     return RunOut(
         **to_summary(row).model_dump(),
+        system=effective_system(row),
         skipped_events=list(row.skipped_events or []),
         timelines={k: [tuple(p) for p in v] for k, v in (row.timelines or {}).items()},
         log=[_log_out(e) for e in row.log],
