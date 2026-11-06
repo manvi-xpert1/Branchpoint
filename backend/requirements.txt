@@ -1,4 +1,8 @@
-# The simulation engine uses only the standard library.
-# Test dependency:
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sqlalchemy>=2.0.36,<2.2
+psycopg[binary]>=3.2
+pydantic>=2.7
+# testing
 pytest>=8
-# Coming in Week 6: fastapi, uvicorn, sqlalchemy, psycopg
+httpx>=0.27

@@ -3,18 +3,49 @@
 Model an interconnected system, introduce failures, simulate how they spread,
 and compare different decisions before applying them in the real world.
 
-**Status:** Weeks 1–5 engine milestone. The deterministic discrete-event engine,
-propagation, branching, metrics and CLI work. API, database and frontend come next.
+**Status:** Week 6 complete. The simulation engine, REST API and PostgreSQL
+persistence work. The frontend comes next.
 
 ## Quick start
 
+### Option A: Docker (API + PostgreSQL in one command)
+
+```bash
+docker compose up --build
+```
+
+Open http://localhost:8000/docs for interactive API docs.
+
+### Option B: plain Python (no database server needed; uses a local SQLite file)
+
 ```bash
 cd backend
+python -m venv .venv
+.venv\Scripts\activate          # Windows  (macOS/Linux: source .venv/bin/activate)
 pip install -r requirements.txt
-python -m pytest                     # run the tests
+python -m pytest                  # 55 tests
+uvicorn app.main:app --reload     # http://localhost:8000/docs
+```
+
+Set `DATABASE_URL` to use PostgreSQL instead of SQLite:
+`postgresql+psycopg://branchpoint:branchpoint@localhost:5432/branchpoint`
+
+### Command-line runner (engine only, no server)
+
+```bash
+cd backend
 python -m app.cli ../examples/ecommerce.json
 python -m app.cli ../examples/ecommerce.json --timeline db-down --explain db-down:api_gateway
 ```
+
+### Try the API
+
+1. In `/docs`, call `POST /api/experiments/import` with the contents of
+   `examples/ecommerce.json`. It returns the new system and scenario ids.
+2. `POST /api/compare` with `{"scenario_ids": ["<db-down id>", "<cache id>", "<replica id>"]}`
+   runs all three and shows which is best on each metric.
+3. Take a `seq` from a run's `log` and call `GET /api/runs/{id}/explain/{seq}`
+   to see the causal chain.
 
 Example output:
 
@@ -28,10 +59,55 @@ DB fails + fast restore at t=8  90.0%         3         0         3         5   
 2x traffic spike on gateway     100.0%        0         5         1         5         0
 ```
 
+## API
+
+All routes are under `/api`. Full schemas are at `/docs`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET / POST | `/systems` | list / create systems |
+| GET / PUT / DELETE | `/systems/{id}` | read / replace definition / delete (cascades) |
+| GET | `/systems/{id}/analysis` | cycles, topological order, blast radius, warnings |
+| POST | `/analysis` | validate an unsaved definition (for live editor feedback) |
+| GET / POST | `/systems/{id}/scenarios` | list / create scenarios (`parent_id` makes a branch) |
+| GET / PUT / DELETE | `/scenarios/{id}` | includes resolved (inherited) events and lineage; delete returns 409 if branches exist |
+| POST | `/scenarios/{id}/branch` | create an empty child that inherits everything |
+| POST / GET | `/scenarios/{id}/runs` | run a simulation and store the result / list runs |
+| GET | `/runs/{id}` | metrics, per-component timelines, causal event log |
+| GET | `/runs/{id}/explain/{seq}` | root-cause chain for one log entry |
+| POST | `/runs/{id}/replay` | re-run from the stored snapshot and verify it is identical |
+| POST | `/compare` | compare existing `run_ids`, or run `scenario_ids` now |
+| POST | `/experiments/import` | import an experiment JSON file (all or nothing) |
+| GET | `/systems/{id}/export` | export system + scenario tree as experiment JSON |
+
+Design choices:
+
+- **Validation before storage.** Invalid graphs, events targeting unknown
+  components, broken interventions and parent cycles return `422` with a
+  reason. A system edit that would break an existing scenario is refused.
+- **Reproducible runs.** Each run stores a snapshot of the exact system and
+  resolved scenario it used, so `replay` gives an identical result even after
+  the system has been edited.
+- **Layered.** `api/` (HTTP) → `services/` (use cases, transactions) →
+  `simulation/` + `domains/` (pure engine, no database or web code).
+
+### Database tables
+
+`systems`, `components`, `dependencies`, `scenarios` (self-referencing
+`parent_id`), `scenario_events`, `interventions`, `simulation_runs` (with JSONB
+metrics, snapshots and timelines), `simulation_events` (causally linked log).
+Tables are created on startup. Alembic migrations will be added once the
+schema settles.
+
 ## Layout
 
 ```
 backend/app/
+  main.py          FastAPI app factory, error handling, CORS
+  schemas.py       Pydantic request/response models
+  api/             HTTP routers: systems, scenarios, simulations
+  services/        use cases: CRUD, validation, running, replay, compare, import/export
+  database/        SQLAlchemy engine/session + table definitions
   models/          Component, Dependency, Event, System (+ validation, JSON in/out)
   simulation/
     graph.py       BFS blast radius, DFS cycle detection, Kahn topological sort
@@ -102,7 +178,7 @@ runs on that copy, so branches never affect each other.
 
 ## Next steps (roadmap)
 
-- Week 6: FastAPI endpoints plus PostgreSQL persistence around `run_scenario`
+- ~~Week 6: FastAPI endpoints plus PostgreSQL persistence~~ ✅
 - Weeks 7–8: React + React Flow editor, scenario builder, timeline view
 - Week 9: Monte Carlo runs (repeated seeds, expected and p95 downtime)
 - Week 10: benchmarks on synthetic graphs, docs, demo
