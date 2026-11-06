@@ -7,6 +7,7 @@ import { depId } from "../components/graph";
 import {
   defaultParams, EventEditor, InterventionEditor, summarizeEvent, summarizeIntervention,
 } from "../components/ScenarioForms";
+import { MonteCarloPanel } from "../components/MonteCarloPanel";
 import { useToast } from "../components/Toast";
 import { uniqueId } from "../lib/catalog";
 import { componentIdsAfter, fallbackPreset, replicaPreset } from "../lib/presets";
@@ -305,6 +306,11 @@ function ScenarioEditor({ scenario, onBranch, onDelete }: {
           </table>
         )}
       </div>
+
+      <MonteCarloPanel scenarioId={scenario.id} until={until}
+        events={[...inheritedEvents.filter((e) => !draft.remove_events.includes(e.id)
+          && !draft.events.some((o) => o.id === e.id)), ...draft.events]}
+        beforeRun={async () => !dirty || save()} />
     </div>
   );
 }

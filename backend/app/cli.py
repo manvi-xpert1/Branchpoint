@@ -5,6 +5,7 @@
     python -m app.cli ../examples/ecommerce.json --timeline db-down
     python -m app.cli ../examples/ecommerce.json --explain db-down:api_gateway
     python -m app.cli ../examples/ecommerce.json --json results.json
+    python -m app.cli ../examples/ecommerce.json --montecarlo 1000
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from .models import Status
 from .simulation.branching import SimulationResult, comparison_table, run_scenario
 from .simulation.engine import explain
 from .simulation.graph import DependencyGraph
+from .simulation.montecarlo import MonteCarloResult, run_monte_carlo
 
 
 def print_timeline(result: SimulationResult) -> None:
@@ -40,6 +42,21 @@ def print_explanation(result: SimulationResult, component_id: str) -> None:
         print(f"  {'  ' * depth}t={entry.time:g}  {entry.component_id}: {entry.message}")
 
 
+def print_monte_carlo(results: list[MonteCarloResult]) -> None:
+    runs = results[0].runs
+    print(f"\nMonte Carlo: {runs} runs per scenario (model estimates, not predictions)\n")
+    headers = ["Scenario", "Mean down", "p50", "p95", "Max", "P(down>0)", "Mean avail."]
+    rows = []
+    for r in results:
+        a = r.aggregates
+        name = r.scenario_name + ("" if not r.deterministic else " (deterministic)")
+        rows.append([name, f"{a.downtime_mean:.2f}", f"{a.downtime_p50:g}", f"{a.downtime_p95:g}",
+                     f"{a.downtime_max:g}", f"{a.p_any_downtime:.1%}", f"{a.availability_mean:.1%}"])
+    widths = [max(len(h), *(len(row[i]) for row in rows)) for i, h in enumerate(headers)]
+    for cells in [headers, ["-" * w for w in widths], *rows]:
+        print("  ".join(c.ljust(w) for c, w in zip(cells, widths)))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a Branchpoint experiment.")
     parser.add_argument("experiment", help="path to an experiment JSON file")
@@ -48,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--explain", action="append", default=[], metavar="SCENARIO:COMPONENT",
                         help="trace a component's worst status back to its root cause")
     parser.add_argument("--json", metavar="FILE", help="write full results to a JSON file")
+    parser.add_argument("--montecarlo", type=int, metavar="N",
+                        help="also run each scenario N times with different seeds")
     args = parser.parse_args(argv)
 
     exp = load_experiment_file(args.experiment)
@@ -75,6 +94,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\nUnknown scenario {scenario_id!r}", file=sys.stderr)
             return 1
         print_explanation(by_id[scenario_id], component_id)
+
+    if args.montecarlo:
+        print_monte_carlo([run_monte_carlo(exp.system, s, exp.until, args.montecarlo)
+                           for s in exp.scenarios])
 
     if args.json:
         with open(args.json, "w") as f:

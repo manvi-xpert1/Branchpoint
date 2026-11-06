@@ -174,7 +174,7 @@ def test_scenario_validation_errors(client, imported):
 
     assert client.post(f"/api/systems/{sid}/scenarios", json={"name": "x", "parent_id": "missing"}).status_code == 404
     # Failed creates leave nothing behind.
-    assert len(client.get(f"/api/systems/{sid}/scenarios").json()) == 6
+    assert len(client.get(f"/api/systems/{sid}/scenarios").json()) == 7
 
 
 def test_events_can_target_components_added_by_interventions(client, imported):
@@ -273,3 +273,59 @@ def test_failed_import_leaves_nothing(client, example):
 def test_not_found(client):
     assert client.get("/api/runs/nope").status_code == 404
     assert client.post("/api/scenarios/nope/runs").status_code == 404
+
+
+# ---- Monte Carlo ------------------------------------------------------
+def test_monte_carlo_on_a_probabilistic_scenario(client, imported):
+    flaky = by_name(client, imported["system_id"])["Flaky week (probabilistic)"]
+    r = client.post(f"/api/scenarios/{flaky['id']}/montecarlo",
+                    json={"runs": 500, "until": 30, "base_seed": 1})
+    assert r.status_code == 201, r.text
+    mc = r.json()
+    agg = mc["aggregates"]
+    assert mc["runs"] == 500 and len(mc["downtimes"]) == 500
+    assert not mc["deterministic"]
+    # db_outage (p=0.3) causes 10 downtime, users_crash (p=0.2) causes 4.
+    assert set(mc["downtimes"]) <= {0, 4, 10, 14}
+    assert agg["downtime_max"] <= 14
+    assert agg["event_frequency"]["db_outage"] == pytest.approx(0.3, abs=0.07)
+    # P(any downtime) = 1 - 0.7 * 0.8 = 0.44
+    assert agg["p_any_downtime"] == pytest.approx(0.44, abs=0.07)
+
+    # Stored and listed, newest first, and fetchable by id.
+    listed = client.get(f"/api/scenarios/{flaky['id']}/montecarlo").json()
+    assert [m["id"] for m in listed] == [mc["id"]]
+    fetched = client.get(f"/api/montecarlo/{mc['id']}").json()
+    # created_at can differ in timezone formatting on SQLite, so compare the rest.
+    assert {k: v for k, v in fetched.items() if k != "created_at"} == \
+        {k: v for k, v in mc.items() if k != "created_at"}
+
+
+def test_monte_carlo_is_reproducible_by_base_seed(client, imported):
+    flaky = by_name(client, imported["system_id"])["Flaky week (probabilistic)"]
+    body = {"runs": 100, "base_seed": 9}
+    a = client.post(f"/api/scenarios/{flaky['id']}/montecarlo", json=body).json()
+    b = client.post(f"/api/scenarios/{flaky['id']}/montecarlo", json=body).json()
+    assert a["aggregates"] == b["aggregates"] and a["downtimes"] == b["downtimes"]
+
+
+def test_monte_carlo_on_a_deterministic_scenario(client, imported):
+    db_down = by_name(client, imported["system_id"])["DB fails, no intervention"]
+    mc = client.post(f"/api/scenarios/{db_down['id']}/montecarlo", json={"runs": 10}).json()
+    assert mc["deterministic"] and mc["base_seed"] == db_down["seed"]
+    assert mc["aggregates"]["downtime_p95"] == mc["aggregates"]["downtime_mean"] == 10
+
+
+def test_monte_carlo_validation_and_errors(client, imported):
+    sid = by_name(client, imported["system_id"])["Baseline (no incidents)"]["id"]
+    assert client.post(f"/api/scenarios/{sid}/montecarlo", json={"runs": 0}).status_code == 422
+    assert client.post(f"/api/scenarios/{sid}/montecarlo", json={"runs": 10_001}).status_code == 422
+    assert client.post("/api/scenarios/missing/montecarlo", json={"runs": 5}).status_code == 404
+    assert client.get("/api/montecarlo/missing").status_code == 404
+
+
+def test_deleting_a_system_removes_its_monte_carlo_runs(client, imported):
+    flaky = by_name(client, imported["system_id"])["Flaky week (probabilistic)"]
+    mc = client.post(f"/api/scenarios/{flaky['id']}/montecarlo", json={"runs": 5}).json()
+    assert client.delete(f"/api/systems/{imported['system_id']}").status_code == 204
+    assert client.get(f"/api/montecarlo/{mc['id']}").status_code == 404

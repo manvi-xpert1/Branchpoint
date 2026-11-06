@@ -117,6 +117,9 @@ class ScenarioRow(Base):
     runs: Mapped[list[SimulationRunRow]] = relationship(
         back_populates="scenario", cascade="all, delete-orphan", order_by="SimulationRunRow.created_at"
     )
+    monte_carlo_runs: Mapped[list[MonteCarloRunRow]] = relationship(
+        back_populates="scenario", cascade="all, delete-orphan", order_by="MonteCarloRunRow.created_at"
+    )
 
 
 class ScenarioEventRow(Base):
@@ -197,3 +200,29 @@ class SimulationEventRow(Base):
     new_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     run: Mapped[SimulationRunRow] = relationship(back_populates="log")
+
+
+class MonteCarloRunRow(Base):
+    """A batch of N seeded runs of one scenario, stored as a summary.
+
+    1,000 full event logs would be large and rarely looked at, so only the
+    aggregates and each run's downtime (for the histogram) are kept. Any
+    single run can be reproduced by running the scenario with seed
+    ``base_seed + i``.
+    """
+
+    __tablename__ = "monte_carlo_runs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    scenario_id: Mapped[str] = mapped_column(ForeignKey("scenarios.id", ondelete="CASCADE"), index=True)
+    runs: Mapped[int] = mapped_column(Integer)
+    base_seed: Mapped[int] = mapped_column(Integer)
+    until: Mapped[float] = mapped_column(Float)
+    # Output of MonteCarloResult.to_dict(): aggregates + per-run downtimes.
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONType)
+    # Resolved events and interventions, so the batch can be re-run later.
+    scenario_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONType)
+    elapsed_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    scenario: Mapped[ScenarioRow] = relationship(back_populates="monte_carlo_runs")

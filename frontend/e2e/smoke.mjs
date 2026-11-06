@@ -5,6 +5,7 @@
  *   # with the backend running (serving the built frontend) on :8000
  *   npm i -D playwright && npx playwright install chromium
  *   node e2e/smoke.mjs [baseUrl] [screenshotDir]
+ *   (optional) set CHROME_PATH to use an existing Chrome instead of the download
  */
 import { chromium } from "playwright";
 import assert from "node:assert/strict";
@@ -14,7 +15,8 @@ const BASE = process.argv[2] ?? "http://localhost:8000";
 const SHOTS = process.argv[3] ?? "e2e/screenshots";
 mkdirSync(SHOTS, { recursive: true });
 
-const browser = await chromium.launch();
+// CHROME_PATH lets you use an existing Chrome/Chromium instead of the Playwright download.
+const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || undefined });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 const consoleErrors = [];
 page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text()));
@@ -85,12 +87,30 @@ try {
   await page.waitForTimeout(500);
   await shot("3b-replica-run");
 
+  step("monte carlo: run the flaky scenario 1000 times");
+  await page.getByRole("link", { name: "Scenarios" }).click();
+  await page.getByRole("link", { name: "Flaky week (probabilistic)" }).click();
+  await page.getByRole("heading", { name: "Flaky week (probabilistic)" }).waitFor();
+  await page.getByLabel("Number of runs").fill("1000");
+  await page.getByRole("button", { name: "Run 1000 times" }).click();
+  await page.getByText(/model estimates/).waitFor();
+  await page.locator('[aria-label="Downtime histogram"] .recharts-bar-rectangle').first().waitFor();
+  // db_outage (p=0.3) -> 10, users_crash (p=0.2) -> 4: four possible outcomes.
+  assert.equal(await page.locator('[aria-label="Downtime histogram"] .recharts-bar-rectangle').count(), 4);
+  const p95 = page.locator(".metric", { hasText: "Bad case (p95)" }).locator(".value");
+  assert.match(await p95.innerText(), /^(10|14)$/);
+  await page.getByLabel("Downtime histogram").scrollIntoViewIfNeeded();
+  await shot("3c-monte-carlo");
+
   step("compare: run every scenario");
   await page.getByRole("link", { name: "Compare" }).first().click();
+  await page.getByText("also run each").click();
   await page.getByRole("button", { name: /Run & compare/ }).click();
   await page.getByRole("table", { name: "Comparison" }).waitFor();
   const rows = page.getByRole("table", { name: "Comparison" }).locator("tbody tr");
-  assert.equal(await rows.count(), 7);
+  assert.equal(await rows.count(), 8);
+  await page.getByRole("columnheader", { name: "p95 downtime" }).waitFor();
+  await page.getByRole("button", { name: /Run & compare/ }).and(page.locator(":enabled")).waitFor({ timeout: 30000 });
   const noIntervention = rows.filter({ hasText: "DB fails, no intervention" });
   assert.match(await noIntervention.locator("td").nth(2).innerText(), /^10$/);
   await page.locator(".recharts-bar-rectangle path").first().waitFor();

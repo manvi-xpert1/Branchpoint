@@ -2,6 +2,7 @@ import type {
   CompareOut,
   ImportOut,
   LogEntry,
+  MonteCarloOut,
   ReplayOut,
   RunOut,
   RunSummary,
@@ -70,4 +71,10 @@ export const api = {
   replay: (runId: string) => request<ReplayOut>("POST", `/runs/${runId}/replay`),
   compareScenarios: (scenarioIds: string[], until: number) =>
     request<CompareOut>("POST", "/compare", { scenario_ids: scenarioIds, until }),
+
+  runMonteCarlo: (scenarioId: string, runs: number, until: number, baseSeed?: number | null) =>
+    request<MonteCarloOut>("POST", `/scenarios/${scenarioId}/montecarlo`,
+      { runs, until, base_seed: baseSeed ?? null }),
+  listMonteCarlo: (scenarioId: string) =>
+    request<MonteCarloOut[]>("GET", `/scenarios/${scenarioId}/montecarlo`),
 };

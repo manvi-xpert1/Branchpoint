@@ -4,6 +4,7 @@ from .tables import (
     ComponentRow,
     DependencyRow,
     InterventionRow,
+    MonteCarloRunRow,
     ScenarioEventRow,
     ScenarioRow,
     SimulationEventRow,
@@ -13,5 +14,5 @@ from .tables import (
 
 __all__ = [
     "Database", "Base", "SystemRow", "ComponentRow", "DependencyRow", "ScenarioRow",
-    "ScenarioEventRow", "InterventionRow", "SimulationRunRow", "SimulationEventRow",
+    "ScenarioEventRow", "InterventionRow", "MonteCarloRunRow", "SimulationRunRow", "SimulationEventRow",
 ]

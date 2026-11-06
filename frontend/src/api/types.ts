@@ -170,3 +170,32 @@ export interface ImportOut {
   system_id: string;
   scenario_ids: Record<string, string>;
 }
+
+export interface MonteCarloAggregates {
+  downtime_mean: number;
+  downtime_p50: number;
+  downtime_p95: number;
+  downtime_max: number;
+  /** Fraction of runs with any downtime. */
+  p_any_downtime: number;
+  availability_mean: number;
+  degraded_time_mean: number;
+  /** Event id -> fraction of runs in which it happened. */
+  event_frequency: Record<string, number>;
+}
+
+export interface MonteCarloOut {
+  id: string;
+  scenario_id: string;
+  scenario_name: string;
+  runs: number;
+  base_seed: number;
+  until: number;
+  /** True when no event is probabilistic, so every run is identical. */
+  deterministic: boolean;
+  aggregates: MonteCarloAggregates;
+  /** One value per run, for the histogram. */
+  downtimes: number[];
+  elapsed_ms: number;
+  created_at: string;
+}

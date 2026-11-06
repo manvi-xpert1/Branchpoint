@@ -3,8 +3,11 @@
 Model an interconnected system, introduce failures, simulate how they spread,
 and compare different decisions before applying them in the real world.
 
-**Status:** Week 8 complete. You can design systems visually, build scenarios, watch
-failures spread, and compare decisions in the browser.
+**Status:** all 10 roadmap weeks built. You can design systems visually, build scenarios,
+watch failures spread, compare decisions in the browser, run scenarios with uncertain
+events many times (Monte Carlo) to see expected and bad-case outcomes, and the engine is
+benchmarked up to 10,000 components. See [docs/architecture.md](docs/architecture.md) for
+how it fits together.
 
 ![Playback of a database failure, with the root-cause chain](docs/screenshots/playback.png)
 
@@ -16,11 +19,18 @@ failures spread, and compare decisions in the browser.
 | **Design** | Drag-and-drop graph editor (React Flow): add components, connect dependencies, edit attributes, live validation, cycle and blast-radius highlighting, JSON mode, export |
 | **Scenarios** | Scenario tree with branching; events with timing, duration, load multiplier and probability; interventions with one-click *replica* and *fallback* presets |
 | **Playback** | The graph coloured by status over time, play/scrub/step controls, per-component timeline lanes, event log, click any entry to see *why it happened*, replay verification |
-| **Compare** | Run scenarios side by side, with the best value per metric highlighted and a downtime vs degraded chart |
+| **Compare** | Run scenarios side by side, with the best value per metric highlighted and a downtime vs degraded chart; optionally add expected and p95 downtime from Monte Carlo |
+| **Monte Carlo** | On any scenario, "Run N times" with seeds `seed, seed+1, …`: expected / p50 / p95 / worst downtime, chance of any downtime, how often each event happened, and a downtime histogram |
 
 | Design | Scenario builder | Compare |
 |---|---|---|
 | ![](docs/screenshots/designer.png) | ![](docs/screenshots/scenario-builder.png) | ![](docs/screenshots/compare.png) |
+
+**Monte Carlo.** The "Flaky week" example has three events that each happen only with some
+probability. A single seeded run happens to show no downtime; 500 runs show the real picture:
+4 time units expected and 14 in the bad case (p95).
+
+<img src="docs/screenshots/monte-carlo.png" alt="Monte Carlo panel with downtime histogram" width="640">
 
 ## Quick start
 
@@ -58,14 +68,15 @@ Set `DATABASE_URL` to use PostgreSQL instead of SQLite:
 ### Tests
 
 ```bash
-cd backend && python -m pytest          # 55 engine + API tests
-cd frontend && npm test                 # 13 unit tests (layout, timelines, presets)
+cd backend && python -m pytest          # 71 engine + API tests (SQLite and PostgreSQL)
+cd frontend && npm test                 # 17 unit tests (layout, timelines, presets, histogram)
 cd frontend && npx tsc -b               # type check
 ```
 
-End-to-end (optional): with the app running on :8000, run
+End-to-end (optional): build the frontend (`npm run build`), start the backend on :8000, then run
 `npm i -D playwright && npx playwright install chromium && npm run e2e`.
-It clicks through the full workflow in a real browser and saves screenshots.
+It clicks through the full workflow in a real browser, including a 1,000-run Monte Carlo,
+and saves screenshots. Set `CHROME_PATH` to use an already-installed Chrome instead.
 
 ### Command-line runner (engine only, no server)
 
@@ -73,6 +84,7 @@ It clicks through the full workflow in a real browser and saves screenshots.
 cd backend
 python -m app.cli ../examples/ecommerce.json
 python -m app.cli ../examples/ecommerce.json --timeline db-down --explain db-down:api_gateway
+python -m app.cli ../examples/ecommerce.json --montecarlo 1000
 ```
 
 ### Try the API
@@ -94,7 +106,18 @@ DB fails + cache fallback       100.0%        0         10        3         12  
 DB fails + read replica         100.0%        0         0         1         10        300
 DB fails + fast restore at t=8  90.0%         3         0         3         5         0
 2x traffic spike on gateway     100.0%        0         5         1         5         0
+Flaky week (probabilistic)      100.0%        0         6         3         7         0
+
+Monte Carlo: 1000 runs per scenario (model estimates, not predictions)
+
+Scenario                                        Mean down  p50  p95  Max  P(down>0)  Mean avail.
+DB fails, no intervention (deterministic)       10.00      10   10   10   100.0%     66.7%
+DB fails + fast restore at t=8 (deterministic)  3.00       3    3    3    100.0%     90.0%
+Flaky week (probabilistic)                      3.92       0    14   14   44.9%      86.9%
 ```
+
+The last block is the point of Week 9: the flaky scenario's single run looks perfect,
+but over 1,000 runs nearly half have downtime.
 
 ## API
 
@@ -114,6 +137,8 @@ All routes are under `/api`. Full schemas are at `/docs`.
 | GET | `/runs/{id}/explain/{seq}` | root-cause chain for one log entry |
 | POST | `/runs/{id}/replay` | re-run from the stored snapshot and verify it is identical |
 | POST | `/compare` | compare existing `run_ids`, or run `scenario_ids` now |
+| POST / GET | `/scenarios/{id}/montecarlo` | run `{runs, until, base_seed?}` seeded runs and store the summary / list batches |
+| GET | `/montecarlo/{id}` | one stored Monte Carlo summary (aggregates + per-run downtime) |
 | POST | `/experiments/import` | import an experiment JSON file (all or nothing) |
 | GET | `/systems/{id}/export` | export system + scenario tree as experiment JSON |
 
@@ -132,7 +157,9 @@ Design choices:
 
 `systems`, `components`, `dependencies`, `scenarios` (self-referencing
 `parent_id`), `scenario_events`, `interventions`, `simulation_runs` (with JSONB
-metrics, snapshots and timelines), `simulation_events` (causally linked log).
+metrics, snapshots and timelines), `simulation_events` (causally linked log),
+`monte_carlo_runs` (JSONB summary of a batch: aggregates and one downtime per run,
+not 1,000 full logs; any single run can be reproduced from `base_seed + i`).
 Tables are created on startup. Alembic migrations will be added once the
 schema settles.
 
@@ -153,19 +180,22 @@ backend/app/
     engine.py      discrete-event loop (domain-independent) + explain()
     metrics.py     availability, downtime, degraded time, recovery time, cost
     branching.py   Scenario inheritance, Interventions, run_scenario, comparison
+    montecarlo.py  run_monte_carlo: N seeded runs -> mean / p50 / p95 / max, event frequency
   domains/
     base.py        DomainRules contract: intrinsic_status + effective_status
     infrastructure/rules.py   software-infrastructure propagation rules
     registry.py    domain name -> rules
   config.py        load an experiment JSON file
   cli.py           command-line runner
-examples/ecommerce.json   the section-12 test system with 6 scenarios
+examples/ecommerce.json   the reference system with 7 scenarios (one probabilistic)
+benchmarks/run_benchmarks.py   synthetic-graph benchmarks + cProfile (charts in docs/benchmarks/)
+docs/architecture.md      how the layers, engine and data fit together
 
 frontend/src/
   api/             typed API client + types mirroring backend schemas
   pages/           Projects, Design, Scenarios, Run (playback), Compare
-  components/      graph node/edge rendering, inspectors, scenario forms
-  lib/             pure logic with unit tests: layout, timeline, presets
+  components/      graph node/edge rendering, inspectors, scenario forms, Monte Carlo panel
+  lib/             pure logic with unit tests: layout, timeline, presets, histogram
 frontend/e2e/smoke.mjs    Playwright end-to-end workflow test
 ```
 
@@ -210,6 +240,47 @@ can add or override them by id, and can drop events with `remove_events`.
 Each run deep-copies the base system, applies interventions to the copy, and
 runs on that copy, so branches never affect each other.
 
+### Monte Carlo
+
+A single run answers "what happens with this seed?". With probabilistic events that can
+be lucky or unlucky, so `run_monte_carlo` runs the scenario N times with seeds
+`base_seed, base_seed + 1, …` (base seed defaults to the scenario's seed, so run 0 equals
+the normal single run). It reports mean, p50, p95 and max downtime, the fraction of runs
+with any downtime, mean availability, and how often each event occurred. The same base
+seed always gives the same aggregates. Percentiles use linear interpolation (numpy's default).
+The UI labels all of these as **model estimates**.
+
+## Benchmarks
+
+`python benchmarks/run_benchmarks.py` times the engine on synthetic graphs. In every case one
+outage reaches every component (the worst case for propagation). Timings below are from one
+Linux machine on Python 3.13; yours will differ, but the shape should not.
+
+| Graph | 10 | 100 | 1,000 | 10,000 components |
+|---|---|---|---|---|
+| chain | 0.1 ms | 0.9 ms | 9.4 ms | 103 ms |
+| tree (all share one root) | 0.1 ms | 0.9 ms | 10 ms | 122 ms |
+| random DAG (~3 edges/node) | 0.2 ms | 2.9 ms | 33 ms | 557 ms |
+
+| | |
+|---|---|
+| ![](docs/benchmarks/runtime_vs_nodes.png) | ![](docs/benchmarks/runtime_vs_events.png) |
+| ![](docs/benchmarks/runtime_vs_branches.png) | ![](docs/benchmarks/runtime_vs_montecarlo.png) |
+
+What the numbers say:
+
+- **Runtime grows roughly linearly with graph size** (slope ≈ 1 on the log-log chart). The DAG is
+  3–5× slower than a chain: it has about 3× the edges, so each status change re-evaluates
+  about 3× as many dependents, and each evaluation has more dependencies to combine.
+- **Event count is not what costs time; status changes are.** 1,000 overlapping failures on a
+  1,000-node graph ran *faster* than 100, because most components were already failed and did
+  not change again.
+- **Branches cost the same each** (~49 ms on a 1,000-node DAG), so comparing 64 decisions is 64×
+  one run. Monte Carlo is the same: about 3.7 ms per run on a 100-node graph.
+- **The profile** (`benchmarks/results/profile.txt`) shows most time in
+  `InfrastructureRules.effective_status`, i.e. combining dependency statuses, not in the queue.
+  That is where an optimisation would start (for example caching group results per component).
+
 ## Assumptions and limitations
 
 - Branchpoint is a simulation based on user-defined rules. It is not a
@@ -219,10 +290,22 @@ runs on that copy, so branches never affect each other.
   blips shorter than a propagation delay can be absorbed.
 - Circular hard dependencies deadlock once both sides fail (the CLI warns
   about cycles).
+- Monte Carlo results are estimates from the same rule-based model; they are only as good as
+  the probabilities you enter. Runs are sequential (no parallelism), so 1,000 runs on a large
+  graph takes seconds.
+- There are no database migrations (Alembic) yet: tables are created on startup. That adds new
+  tables (such as `monte_carlo_runs`) to an existing database, but cannot change columns of
+  existing ones; for that you would delete `backend/branchpoint.db` or the Postgres volume.
+- There is no authentication; this is a single-user local app.
+- The Docker build has not yet been verified on a real machine.
+- The frontend has unit tests for `lib/` and an end-to-end script, but no component tests.
 
 ## Next steps (roadmap)
 
 - ~~Week 6: FastAPI endpoints plus PostgreSQL persistence~~ ✅
 - ~~Weeks 7–8: React + React Flow editor, scenario builder, playback, comparison~~ ✅
-- Week 9: Monte Carlo runs (repeated seeds, expected and p95 downtime)
-- Week 10: benchmarks on synthetic graphs, docs, demo
+- ~~Week 9: Monte Carlo runs (repeated seeds, expected and p95 downtime)~~ ✅
+- ~~Week 10: benchmarks on synthetic graphs, profiling, architecture docs~~ ✅ (demo video still to record)
+
+Possible next steps: Alembic migrations, load propagation for traffic spikes, a second domain
+(supply chain) on the same engine, and parallel Monte Carlo.

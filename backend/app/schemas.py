@@ -203,6 +203,39 @@ class CompareOut(_Model):
     best: dict[str, list[str]]
 
 
+# ---- Monte Carlo ------------------------------------------------------
+class MonteCarloRequest(_Model):
+    runs: int = Field(default=1000, ge=1, le=10_000)
+    until: float = Field(default=30.0, gt=0, le=1_000_000)
+    base_seed: int | None = None  # None: use the scenario's seed
+
+
+class MonteCarloAggregates(_Model):
+    downtime_mean: float
+    downtime_p50: float
+    downtime_p95: float
+    downtime_max: float
+    p_any_downtime: float
+    availability_mean: float
+    degraded_time_mean: float
+    event_frequency: dict[str, float]
+
+
+class MonteCarloOut(_Model):
+    id: str
+    scenario_id: str
+    scenario_name: str
+    runs: int
+    base_seed: int
+    until: float
+    # True when no event is probabilistic, so every run is identical.
+    deterministic: bool
+    aggregates: MonteCarloAggregates
+    downtimes: list[float]  # one per run, for the histogram
+    elapsed_ms: float
+    created_at: datetime
+
+
 # ---- experiments ------------------------------------------------------
 class ExperimentScenarioIn(ScenarioIn):
     """Scenario in an experiment file: ids are local, parents reference them."""

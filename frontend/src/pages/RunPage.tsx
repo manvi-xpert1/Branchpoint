@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import type { ComponentDef, DependencyDef, LogEntry, ReplayOut, RunOut, Status, SystemDef } from "../api/types";
-import { ErrorNotice, errorMessage, fmt, pct, StatusPill } from "../components/common";
+import { ErrorNotice, errorMessage, fmt, Metric, pct, StatusPill } from "../components/common";
 import { buildEdges, buildNodes, depId, Legend, nodeTypes } from "../components/graph";
 import { freeSpot, layeredLayout, positionsFor, type Point } from "../lib/layout";
 import { causalChain, eventTimes, segments, STATUS_COLORS, statusAt } from "../lib/timeline";
@@ -226,15 +226,6 @@ function RunView({ run }: { run: RunOut }) {
           {run.log.length === 0 && <p className="muted small" style={{ padding: "0 16px" }}>Nothing happened: no events in this scenario.</p>}
         </div>
       </aside>
-    </div>
-  );
-}
-
-function Metric({ label, value, tone }: { label: string; value: string; tone?: "ok" | "warn" | "bad" }) {
-  return (
-    <div className="metric">
-      <div className="label">{label}</div>
-      <div className="value" style={tone ? { color: `var(--${tone})` } : undefined}>{value}</div>
     </div>
   );
 }

@@ -78,6 +78,19 @@
         {"id": "spike", "type": "traffic_spike", "target_id": "api_gateway", "start_time": 10,
          "duration": 5, "severity": 2.0}
       ]
+    },
+    {
+      "id": "flaky",
+      "name": "Flaky week (probabilistic)",
+      "parent": "baseline",
+      "events": [
+        {"id": "db_outage", "type": "component_failure", "target_id": "postgres", "start_time": 5,
+         "probability": 0.3},
+        {"id": "users_crash", "type": "component_failure", "target_id": "user_service", "start_time": 20,
+         "duration": 4, "probability": 0.2},
+        {"id": "cache_slow", "type": "latency_increase", "target_id": "redis", "start_time": 12,
+         "duration": 6, "probability": 0.5}
+      ]
     }
   ]
 }

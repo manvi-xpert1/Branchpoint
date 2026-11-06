@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
-from ..schemas import CompareOut, CompareRequest, LogEntryOut, ReplayOut, RunOut, RunRequest, RunSummary
-from ..services import runs, scenarios
+from ..schemas import (CompareOut, CompareRequest, LogEntryOut, MonteCarloOut, MonteCarloRequest,
+                       ReplayOut, RunOut, RunRequest, RunSummary)
+from ..services import montecarlo, runs, scenarios
 from .deps import get_db
 
 router = APIRouter(tags=["simulations"])
@@ -39,3 +40,23 @@ def replay(run_id: str, db: Session = Depends(get_db)):
 @router.post("/compare", response_model=CompareOut)
 def compare(data: CompareRequest, db: Session = Depends(get_db)):
     return runs.compare(db, data.run_ids, data.scenario_ids, data.until)
+
+
+@router.post("/scenarios/{scenario_id}/montecarlo", response_model=MonteCarloOut,
+             status_code=status.HTTP_201_CREATED)
+def run_monte_carlo(scenario_id: str, data: MonteCarloRequest | None = None,
+                    db: Session = Depends(get_db)):
+    """Run the scenario N times (seed base_seed + i) and store the summary."""
+    data = data or MonteCarloRequest()
+    row = montecarlo.execute(db, scenarios.get(db, scenario_id), data.runs, data.until, data.base_seed)
+    return montecarlo.to_schema(row)
+
+
+@router.get("/scenarios/{scenario_id}/montecarlo", response_model=list[MonteCarloOut])
+def list_monte_carlo(scenario_id: str, db: Session = Depends(get_db)):
+    return [montecarlo.to_schema(r) for r in montecarlo.list_for_scenario(db, scenario_id)]
+
+
+@router.get("/montecarlo/{mc_id}", response_model=MonteCarloOut)
+def get_monte_carlo(mc_id: str, db: Session = Depends(get_db)):
+    return montecarlo.to_schema(montecarlo.get(db, mc_id))

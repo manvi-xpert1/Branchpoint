@@ -39,6 +39,17 @@ export function StatusPill({ status }: { status: Status }) {
   return <span className={`pill ${status}`}><span className="dot" style={{ background: "currentColor" }} />{status}</span>;
 }
 
+export function Metric({ label, value, tone, hint }: {
+  label: string; value: string; tone?: "ok" | "warn" | "bad"; hint?: string;
+}) {
+  return (
+    <div className="metric" title={hint}>
+      <div className="label">{label}</div>
+      <div className="value" style={tone ? { color: `var(--${tone})` } : undefined}>{value}</div>
+    </div>
+  );
+}
+
 export function ErrorNotice({ error }: { error: string | null }) {
   return error ? <div className="notice error" role="alert">{error}</div> : null;
 }

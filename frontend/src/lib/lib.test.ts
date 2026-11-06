@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ComponentDef, DependencyDef, LogEntry, SystemDef } from "../api/types";
 import { uniqueId } from "./catalog";
+import { binIndexOf, histogram } from "./histogram";
 import { freeSpot, layeredLayout } from "./layout";
 import { componentIdsAfter, fallbackPreset, replicaPreset } from "./presets";
 import { causalChain, eventTimes, segments, statusAt, worst } from "./timeline";
@@ -110,5 +111,32 @@ describe("uniqueId", () => {
   it("slugifies and avoids collisions", () => {
     expect(uniqueId("My Service", [])).toBe("my_service");
     expect(uniqueId("service", ["service", "service_2"])).toBe("service_3");
+  });
+});
+
+describe("histogram", () => {
+  it("uses one bar per distinct value when there are few", () => {
+    const bins = histogram([0, 10, 0, 4, 14, 0, 10]);
+    expect(bins.map((b) => [b.label, b.count])).toEqual([["0", 3], ["4", 1], ["10", 2], ["14", 1]]);
+  });
+
+  it("splits into equal-width ranges when values are spread out", () => {
+    const values = Array.from({ length: 100 }, (_, i) => i); // 0..99
+    const bins = histogram(values, 10);
+    expect(bins).toHaveLength(10);
+    expect(bins.every((b) => b.count === 10)).toBe(true);
+    expect(bins.reduce((n, b) => n + b.count, 0)).toBe(100); // the max value is not lost
+  });
+
+  it("returns nothing for no values", () => {
+    expect(histogram([])).toEqual([]);
+  });
+
+  it("finds the bar a value falls in, including interpolated percentiles", () => {
+    const bins = histogram([0, 4, 10, 14]);
+    expect(binIndexOf(bins, 10)).toBe(2);
+    expect(binIndexOf(bins, 12)).toBe(2);
+    expect(binIndexOf(bins, 14)).toBe(3);
+    expect(binIndexOf(bins, -1)).toBe(-1);
   });
 });
