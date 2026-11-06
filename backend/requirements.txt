@@ -1,0 +1,4 @@
+# The simulation engine uses only the standard library.
+# Test dependency:
+pytest>=8
+# Coming in Week 6: fastapi, uvicorn, sqlalchemy, psycopg
