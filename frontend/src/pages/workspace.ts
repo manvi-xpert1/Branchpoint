@@ -1,8 +1,10 @@
 import { createContext, useContext } from "react";
-import type { ScenarioOut, SystemDef, SystemOut } from "../api/types";
+import type { DomainSpec, ScenarioOut, SystemDef, SystemOut } from "../api/types";
 
 export interface Workspace {
   system: SystemOut;
+  /** The catalog of the system's domain: entity, event and decision types, metrics, assumptions. */
+  spec: DomainSpec;
   /** Unsaved edits from the designer; survives switching tabs. */
   draft: SystemDef;
   setDraft: (d: SystemDef | ((prev: SystemDef) => SystemDef)) => void;
@@ -29,5 +31,6 @@ export function toDef(s: SystemOut): SystemDef {
     description: s.description,
     components: s.components,
     dependencies: s.dependencies,
+    parameters: s.parameters ?? {},
   };
 }

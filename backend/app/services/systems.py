@@ -28,6 +28,7 @@ def definition_dict(data: SystemIn, system_id: str = "draft") -> dict:
         "name": data.name,
         "domain": data.domain,
         "description": data.description,
+        "parameters": data.parameters,
         "components": [
             {
                 "id": c.id,
@@ -47,10 +48,14 @@ def definition_dict(data: SystemIn, system_id: str = "draft") -> dict:
 def to_domain_from_input(data: SystemIn, system_id: str = "draft") -> System:
     """Build and validate a domain System. Raises InvalidInput."""
     try:
-        get_domain(data.domain)
-        return System.from_dict(definition_dict(data, system_id))
+        domain = get_domain(data.domain)
+        system = System.from_dict(definition_dict(data, system_id))
     except (ValidationError, ValueError) as exc:
         raise InvalidInput(str(exc)) from exc
+    problems = domain.errors(system)
+    if problems:
+        raise InvalidInput("; ".join(problems))
+    return system
 
 
 def to_input(row: SystemRow) -> SystemIn:
@@ -58,6 +63,7 @@ def to_input(row: SystemRow) -> SystemIn:
         name=row.name,
         domain=row.domain,
         description=row.description,
+        parameters=row.parameters or {},
         components=[
             ComponentIn(
                 id=c.key, name=c.name, type=c.type, entry_point=c.entry_point,
@@ -69,7 +75,7 @@ def to_input(row: SystemRow) -> SystemIn:
             DependencyIn(
                 id=d.key, source_id=d.source_key, target_id=d.target_key,
                 dependency_type=d.dependency_type, group=d.group,
-                propagation_delay=d.propagation_delay,
+                propagation_delay=d.propagation_delay, attributes=d.attributes or {},
             )
             for d in row.dependencies
         ],
@@ -112,6 +118,7 @@ def list_summaries(db: Session) -> list[SystemSummary]:
 def _write_definition(db: Session, row: SystemRow, data: SystemIn) -> None:
     to_domain_from_input(data)  # validate before touching the database
     row.name, row.domain, row.description = data.name, data.domain, data.description
+    row.parameters = data.parameters
     # Delete old graph rows before inserting new ones so (system_id, key)
     # stays unique even when a key is reused.
     row.components.clear()
@@ -126,7 +133,7 @@ def _write_definition(db: Session, row: SystemRow, data: SystemIn) -> None:
         row.dependencies.append(DependencyRow(
             key=d.id or f"{d.source_id}->{d.target_id}", source_key=d.source_id,
             target_key=d.target_id, dependency_type=d.dependency_type, group=d.group,
-            propagation_delay=d.propagation_delay, position=i,
+            propagation_delay=d.propagation_delay, attributes=d.attributes, position=i,
         ))
 
 
@@ -180,17 +187,19 @@ def analyze(data: SystemIn) -> SystemAnalysis:
     try:
         system = to_domain_from_input(data)
     except InvalidInput as exc:
-        return SystemAnalysis(valid=False, errors=exc.message.splitlines()[1:] or [exc.message],
+        return SystemAnalysis(valid=False, errors=exc.message.splitlines()[1:] or exc.message.split("; "),
                               warnings=[], cycle=None, topological_order=None,
                               entry_points=[], blast_radius={})
     graph = DependencyGraph(system)
     cycle = graph.find_cycle()
-    warnings = get_domain(system.domain).validate(system)
-    if cycle:
+    domain = get_domain(system.domain)
+    features = set(domain.spec.features)
+    warnings = domain.validate(system)
+    if cycle and "propagation_delay" in features:  # loops are normal in flow domains (e.g. ICU -> ward)
         warnings.append("Dependency cycle: " + " -> ".join(cycle)
                         + ". Components in a hard cycle cannot recover once both fail.")
     entry = [c.id for c in system.components.values() if c.entry_point]
-    if system.components and not entry:
+    if system.components and not entry and "entry_points" in features:
         warnings.append("No entry points marked; availability will be measured across all components.")
     return SystemAnalysis(
         valid=True,

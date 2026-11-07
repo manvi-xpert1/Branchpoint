@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from ..schemas import ExperimentIn, ImportOut, ScenarioIn, SystemIn
-from . import scenarios, systems
+from . import decisions, scenarios, systems
 from .errors import InvalidInput
 
 
@@ -22,6 +22,8 @@ def import_experiment(db: Session, data: ExperimentIn) -> ImportOut:
             row = scenarios.create(db, system_row.id,
                                    ScenarioIn(**payload, parent_id=id_map.get(parent_ref) if parent_ref else None))
             id_map[s.id] = row.id
+        if data.objectives is not None:
+            decisions.set_objectives(db, system_row.id, data.objectives)
     except Exception:
         # Do not leave a half-imported experiment behind.
         systems.delete(db, system_row.id)
@@ -44,11 +46,14 @@ def export_experiment(db: Session, system_id: str, until: float = 30.0) -> dict:
             "interventions": [i.model_dump() for i in out.interventions],
             "remove_events": out.remove_events,
         })
-    return {
+    out = {
         "until": until,
         "system": {"id": row.id, **systems.to_input(row).model_dump()},
         "scenarios": out_scenarios,
     }
+    if row.objectives:
+        out["objectives"] = row.objectives
+    return out
 
 
 def _depth(s) -> tuple[int, object]:

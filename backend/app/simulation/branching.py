@@ -17,9 +17,8 @@ from typing import Any
 
 from ..domains.registry import get_domain
 from ..models import Component, Dependency, Event, System
-from .engine import Simulator
-from .metrics import Metrics, compute_metrics
-from .state import LogEntry, SimulationState
+from .outcome import MetricValues, Outcome
+from .state import LogEntry
 
 INTERVENTION_TYPES = {
     "add_component",
@@ -27,6 +26,8 @@ INTERVENTION_TYPES = {
     "add_dependency",
     "remove_dependency",
     "set_attribute",
+    "set_dependency_attribute",
+    "set_parameter",
 }
 
 
@@ -56,6 +57,13 @@ class Intervention:
             system.remove_dependency(p["id"])
         elif self.type == "set_attribute":
             system.components[p["component_id"]].attributes[p["key"]] = p["value"]
+        elif self.type == "set_dependency_attribute":
+            dep = next((d for d in system.dependencies if d.id == p["dependency_id"]), None)
+            if dep is None:
+                raise KeyError(f"no dependency {p['dependency_id']!r}")
+            dep.attributes[p["key"]] = p["value"]
+        elif self.type == "set_parameter":
+            system.parameters[p["key"]] = p["value"]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Intervention":
@@ -100,13 +108,33 @@ class SimulationResult:
     scenario_id: str
     scenario_name: str
     seed: int
-    metrics: Metrics
-    state: SimulationState
-    skipped_events: list[str]
+    domain: str
+    outcome: Outcome
+
+    @property
+    def metrics(self) -> MetricValues:
+        return self.outcome.metrics
 
     @property
     def log(self) -> list[LogEntry]:
-        return self.state.log
+        return self.outcome.log
+
+    @property
+    def timelines(self):
+        return self.outcome.timelines
+
+    @property
+    def series(self):
+        return self.outcome.series
+
+    @property
+    def skipped_events(self) -> list[str]:
+        return self.outcome.skipped_events
+
+    @property
+    def state(self):
+        """The domain's own final state (for infrastructure: SimulationState)."""
+        return self.outcome.state
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -120,42 +148,38 @@ class SimulationResult:
 
 
 def run_scenario(base_system: System, scenario: Scenario, until: float) -> SimulationResult:
+    """Run one scenario: apply its decisions to a copy of the system, then simulate."""
     system = base_system.copy()
     interventions = scenario.resolved_interventions()
     for intervention in interventions:
         intervention.apply(system)
 
-    sim = Simulator(system, get_domain(system.domain), until=until, seed=scenario.seed)
-    sim.schedule(scenario.resolved_events())
-    state = sim.run()
-    cost = sum(i.cost for i in interventions)
+    domain = get_domain(system.domain)
+    events = scenario.resolved_events()
+    problems = domain.errors(system) + domain.event_errors(events)
+    if problems:
+        raise ValueError("; ".join(problems))
+    outcome = domain.simulate(system, events, until, scenario.seed,
+                              intervention_cost=sum(i.cost for i in interventions))
     return SimulationResult(
         scenario_id=scenario.id,
         scenario_name=scenario.name,
         seed=scenario.seed,
-        metrics=compute_metrics(state, until, cost),
-        state=state,
-        skipped_events=sim.skipped_events,
+        domain=domain.name,
+        outcome=outcome,
     )
 
 
 def comparison_table(results: list[SimulationResult]) -> str:
-    """Side-by-side metrics as a plain-text table."""
-    headers = ["Scenario", "Availability", "Downtime", "Degraded", "Affected", "Recovery", "Cost"]
-    rows = []
-    for r in results:
-        m = r.metrics
-        rows.append([
-            r.scenario_name,
-            f"{m.availability:.1%}",
-            f"{m.downtime:g}",
-            f"{m.degraded_time:g}",
-            str(m.affected_components),
-            "-" if m.affected_components == 0
-            else "not recovered" if m.recovery_time is None
-            else f"{m.recovery_time:g}",
-            f"{m.cost:g}",
-        ])
+    """Side-by-side metrics as a plain-text table, with the columns of the results' domain."""
+    from ..domains.spec import format_value
+
+    spec = get_domain(results[0].domain).spec
+    # Skip opt-in metrics no result has a value for (e.g. latency on a system without latencies).
+    metrics = [m for m in spec.metrics if any(r.metrics.get(m.key) is not None for r in results)
+               or m.key == "recovery_time"]
+    headers = ["Scenario", *(m.label for m in metrics)]
+    rows = [[r.scenario_name, *(format_value(m, r.metrics.get(m.key)) for m in metrics)] for r in results]
     widths = [max(len(h), *(len(row[i]) for row in rows)) for i, h in enumerate(headers)]
     line = lambda cells: "  ".join(c.ljust(w) for c, w in zip(cells, widths))  # noqa: E731
     return "\n".join([line(headers), line(["-" * w for w in widths]), *map(line, rows)])

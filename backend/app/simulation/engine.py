@@ -1,4 +1,4 @@
-"""The discrete-event simulation loop. Domain-independent.
+"""Status propagation on top of the shared kernel (software infrastructure).
 
 Overview of one run:
 
@@ -21,20 +21,24 @@ can therefore be absorbed without reaching dependents.
 
 from __future__ import annotations
 
-import random
-
 from ..domains.base import DomainRules
 from ..models import Event, Status, System
-from .event_queue import END, EVALUATE, START, EventQueue, ScheduledEvent
+from .event_queue import END, EVALUATE, START, ScheduledEvent
 from .graph import DependencyGraph
+from .kernel import Kernel, SimulationError
 from .state import Effect, LogEntry, SimulationState
 
-
-class SimulationError(RuntimeError):
-    pass
+__all__ = ["Simulator", "SimulationError", "explain", "first_change"]
 
 
 class Simulator:
+    """Status propagation through a dependency graph, running on the shared Kernel.
+
+    Used by the software-infrastructure domain. The kernel owns time, the
+    queue, randomness and the log; this class owns what START/END/EVALUATE
+    mean: effects on components and statuses spreading to dependents.
+    """
+
     def __init__(
         self,
         system: System,
@@ -44,60 +48,58 @@ class Simulator:
         max_steps: int = 100_000,
     ) -> None:
         system.validate()
-        if until <= 0:
-            raise ValueError("until must be > 0")
+        self.kernel = Kernel(until, seed, max_steps)
         self.system = system
         self.rules = rules
         self.until = until
-        self.rng = random.Random(seed)
         self.max_steps = max_steps
         self.graph = DependencyGraph(system)
         self.state = SimulationState.initial(system)
-        self.queue = EventQueue()
+        self.state.log = self.kernel.log  # one log, owned by the kernel
         self.skipped_events: list[str] = []  # probabilistic events that did not occur
+        # Load flow is opt-in: only dependencies with a load_share forward load.
+        self.load_edges = [d for d in system.dependencies if _number(d.attributes.get("load_share")) is not None]
+        self._load_order = self._order_for_load() if self.load_edges else []
+
+    @property
+    def rng(self):
+        return self.kernel.rng
+
+    @property
+    def queue(self):
+        return self.kernel.queue
 
     # ---- scheduling ---------------------------------------------------
     def schedule(self, events: list[Event]) -> None:
-        # Sort by id first so the RNG is consumed in the same order
-        # regardless of how the caller ordered the list.
-        for event in sorted(events, key=lambda e: (e.start_time, e.id)):
+        for event in events:
             if event.target_id not in self.system.components:
                 raise SimulationError(f"Event {event.id}: unknown target {event.target_id!r}")
-            if event.probability < 1.0 and self.rng.random() >= event.probability:
-                self.skipped_events.append(event.id)
-                continue
+        occurring, skipped = self.kernel.sample_events(events)
+        self.skipped_events.extend(skipped)
+        for event in occurring:
             data = {"type": event.type, "severity": event.severity}
-            self.queue.push(ScheduledEvent(event.start_time, START, event.target_id, event.id, data=data))
+            self.kernel.at(event.start_time, START, event.target_id, event_id=event.id, data=data)
 
             duration = event.duration
             if duration is None and event.type == "component_failure":
                 duration = self.system.components[event.target_id].attributes.get("recovery_time")
             if duration is not None and event.type != "component_recovery":
-                self.queue.push(
-                    ScheduledEvent(event.start_time + duration, END, event.target_id, event.id, data=data)
-                )
+                self.kernel.at(event.start_time + duration, END, event.target_id, event_id=event.id, data=data)
 
     # ---- main loop ----------------------------------------------------
     def run(self) -> SimulationState:
-        steps = 0
-        while self.queue:
-            item = self.queue.pop()
-            if item.time > self.until:
-                break
-            steps += 1
-            if steps > self.max_steps:
-                raise SimulationError(
-                    f"Exceeded {self.max_steps} steps; the system may be oscillating (check for cycles)."
-                )
-            self.state.time = item.time
-            if item.kind == START:
-                self._start(item)
-            elif item.kind == END:
-                self._end(item)
-            else:
-                self._evaluate(item.component_id, item.cause_id)
+        self.kernel.run(self._handle)
         self.state.time = self.until
         return self.state
+
+    def _handle(self, item: ScheduledEvent) -> None:
+        self.state.time = self.kernel.now
+        if item.kind == START:
+            self._start(item)
+        elif item.kind == END:
+            self._end(item)
+        else:
+            self._evaluate(item.component_id, item.cause_id)
 
     # ---- handlers -----------------------------------------------------
     def _start(self, item: ScheduledEvent) -> None:
@@ -110,10 +112,10 @@ class Simulator:
         else:
             effects.append(Effect(item.event_id or "", etype, item.data["severity"]))
             msg = f"{etype.replace('_', ' ')} begins"
-        entry = self.state.add_log(
+        entry = self.kernel.log_entry(
             kind="event", component_id=item.component_id, message=msg, event_id=item.event_id
         )
-        self._evaluate(item.component_id, entry.id)
+        self._after_effect_change(item.component_id, entry.id)
 
     def _end(self, item: ScheduledEvent) -> None:
         effects = self.state.effects[item.component_id]
@@ -121,17 +123,81 @@ class Simulator:
         effects[:] = [e for e in effects if e.event_id != item.event_id]
         if len(effects) == before:
             return  # already cleared (e.g. by an explicit recovery event)
-        entry = self.state.add_log(
+        entry = self.kernel.log_entry(
             kind="event",
             component_id=item.component_id,
             message=f"{item.data['type'].replace('_', ' ')} ends",
             event_id=item.event_id,
         )
-        self._evaluate(item.component_id, entry.id)
+        self._after_effect_change(item.component_id, entry.id)
+
+    def _after_effect_change(self, component_id: str, cause_id: int) -> None:
+        self._record_load(component_id)
+        self._evaluate(component_id, cause_id)
+        if self.load_edges:
+            self._propagate_load(cause_id)
+
+    # ---- load flow (opt-in) --------------------------------------------
+    def _order_for_load(self) -> list[str]:
+        """Callers before the things they call, so extra load can be pushed downstream."""
+        try:
+            return list(reversed(self.graph.topological_order()))
+        except ValueError:  # cycles: one pass in definition order (documented limitation)
+            return list(self.system.components)
+
+    def _propagate_load(self, cause_id: int) -> None:
+        """Recompute the load each component receives from its callers.
+
+        A caller's extra load (its load minus its normal ``current_load``)
+        is forwarded to each target in proportion to the dependency's
+        ``load_share``. Targets whose inherited load changed are logged
+        (linked to the cause) and re-evaluated.
+        """
+        load_of = getattr(self.rules, "load_of")
+        inherited = {cid: 0.0 for cid in self.system.components}
+        by_source: dict[str, list] = {}
+        for d in self.load_edges:
+            by_source.setdefault(d.source_id, []).append(d)
+        for cid in self._load_order:
+            component = self.system.components[cid]
+            own = [e for e in self.state.effects[cid] if e.type != "inherited_load"]
+            total = load_of(component, own) + inherited[cid]
+            extra = total - float(component.attributes.get("current_load", 0) or 0)
+            for d in by_source.get(cid, []):
+                inherited[d.target_id] += extra * float(d.attributes["load_share"])
+        for cid, amount in inherited.items():
+            effects = self.state.effects[cid]
+            current = sum(e.severity for e in effects if e.type == "inherited_load")
+            if abs(current - amount) < 1e-9:
+                continue
+            effects[:] = [e for e in effects if e.type != "inherited_load"]
+            if abs(amount) > 1e-9:
+                effects.append(Effect("load-flow", "inherited_load", amount))
+            entry = self.kernel.log_entry(
+                kind="event", component_id=cid, cause_id=cause_id,
+                message=f"load from callers {'+' if amount >= 0 else ''}{amount:g} (was {current:+g})",
+            )
+            self._record_load(cid)
+            self._evaluate(cid, entry.id)
+
+    def _record_load(self, component_id: str) -> None:
+        timeline = self.state.load.get(component_id)
+        load_of = getattr(self.rules, "load_of", None)
+        if timeline is None or load_of is None:
+            return
+        load = load_of(self.system.components[component_id], self.state.effects[component_id])
+        if load != timeline[-1][1]:
+            if timeline[-1][0] == self.kernel.now:
+                timeline[-1] = (self.kernel.now, load)
+            else:
+                timeline.append((self.kernel.now, load))
 
     def _evaluate(self, component_id: str, cause_id: int | None) -> None:
         component = self.system.components[component_id]
         intrinsic = self.rules.intrinsic_status(component, self.state.effects[component_id])
+        own = self.state.intrinsic[component_id]
+        if own[-1][1] != intrinsic.status:
+            own.append((self.kernel.now, intrinsic.status))
         deps = [(d, self.state.status[d.target_id]) for d in self.graph.depends_on[component_id]]
         verdict = self.rules.effective_status(component, intrinsic, deps)
 
@@ -139,7 +205,7 @@ class Simulator:
         if verdict.status == old:
             return
         self.state.set_status(component_id, verdict.status)
-        entry = self.state.add_log(
+        entry = self.kernel.log_entry(
             kind="status_change",
             component_id=component_id,
             message=f"{old} -> {verdict.status}: {verdict.reason}",
@@ -148,11 +214,13 @@ class Simulator:
             new_status=verdict.status,
         )
         for dep in self.graph.dependents[component_id]:
-            self.queue.push(
-                ScheduledEvent(
-                    self.state.time + dep.propagation_delay, EVALUATE, dep.source_id, cause_id=entry.id
-                )
-            )
+            self.kernel.after(dep.propagation_delay, EVALUATE, dep.source_id, cause_id=entry.id)
+
+
+def _number(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def explain(log: list[LogEntry], entry_id: int) -> list[LogEntry]:

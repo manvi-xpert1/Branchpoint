@@ -52,6 +52,10 @@ class SimulationState:
     # component -> [(time, status)] each time its status changed
     timeline: dict[str, list[tuple[float, Status]]] = field(default_factory=dict)
     log: list[LogEntry] = field(default_factory=list)
+    # component -> [(time, load)] each time its load changed (components with a current_load only)
+    load: dict[str, list[tuple[float, float]]] = field(default_factory=dict)
+    # component -> [(time, own status)]: its status ignoring dependencies (events, overload)
+    intrinsic: dict[str, list[tuple[float, Status]]] = field(default_factory=dict)
 
     @classmethod
     def initial(cls, system: System) -> "SimulationState":
@@ -60,6 +64,10 @@ class SimulationState:
             state.status[cid] = Status.HEALTHY
             state.effects[cid] = []
             state.timeline[cid] = [(0.0, Status.HEALTHY)]
+            state.intrinsic[cid] = [(0.0, Status.HEALTHY)]
+            base = system.components[cid].attributes.get("current_load")
+            if isinstance(base, (int, float)) and not isinstance(base, bool):
+                state.load[cid] = [(0.0, float(base))]
         return state
 
     def add_log(self, **kwargs: Any) -> LogEntry:

@@ -9,10 +9,23 @@ on Postgres. When the target breaks, the effect flows to the source.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+# The infrastructure relationship types. Other domains add their own; the
+# full list comes from the domain registry (see ``_check_type``).
 DEPENDENCY_TYPES = {"requires", "optional", "fallback"}
+
+
+def _check_type(dependency_id: str, dependency_type: str) -> None:
+    # Imported here, not at the top, because the domains package imports models.
+    from ..domains.registry import known_relationship_types
+
+    known = known_relationship_types() | DEPENDENCY_TYPES
+    if dependency_type not in known:
+        raise ValueError(
+            f"Dependency {dependency_id}: unknown type {dependency_type!r}; expected one of {sorted(known)}"
+        )
 
 
 @dataclass
@@ -30,13 +43,11 @@ class Dependency:
     group: str | None = None
     # Simulated time units before a change in the target reaches the source.
     propagation_delay: float = 0.0
+    # Domain-specific data, e.g. a routing probability, travel time or cost.
+    attributes: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.dependency_type not in DEPENDENCY_TYPES:
-            raise ValueError(
-                f"Dependency {self.id}: unknown type {self.dependency_type!r}; "
-                f"expected one of {sorted(DEPENDENCY_TYPES)}"
-            )
+        _check_type(self.id, self.dependency_type)
         if self.propagation_delay < 0:
             raise ValueError(f"Dependency {self.id}: propagation_delay must be >= 0")
 
@@ -49,6 +60,7 @@ class Dependency:
             dependency_type=data.get("dependency_type", "requires"),
             group=data.get("group"),
             propagation_delay=float(data.get("propagation_delay", 0.0)),
+            attributes=dict(data.get("attributes") or {}),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -59,4 +71,5 @@ class Dependency:
             "dependency_type": self.dependency_type,
             "group": self.group,
             "propagation_delay": self.propagation_delay,
+            "attributes": self.attributes,
         }

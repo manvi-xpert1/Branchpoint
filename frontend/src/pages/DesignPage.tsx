@@ -17,7 +17,8 @@ import { download, ErrorNotice, errorMessage } from "../components/common";
 import { buildEdges, buildNodes, depId, Legend, nodeTypes } from "../components/graph";
 import { DependencyInspector, ComponentInspector, SystemInspector } from "../components/Inspectors";
 import { useToast } from "../components/Toast";
-import { COMPONENT_KINDS, kindOf, uniqueId } from "../lib/catalog";
+import { uniqueId } from "../lib/catalog";
+import { defaultAttributes, entityType, hasFeature } from "../lib/domains";
 import { freeSpot, layeredLayout, positionsFor } from "../lib/layout";
 import { useWorkspace } from "./workspace";
 
@@ -42,7 +43,7 @@ function useAnalysis(draft: SystemDef): SystemAnalysis | null {
 
 function Designer() {
   const ws = useWorkspace();
-  const { draft, setDraft } = ws;
+  const { draft, setDraft, spec } = ws;
   const toast = useToast();
   const flow = useReactFlow();
   const [selection, setSelection] = useState<Selection>(null);
@@ -54,8 +55,8 @@ function Designer() {
   const analysis = useAnalysis(draft);
 
   const positions = useMemo(
-    () => positionsFor(draft.components, draft.dependencies),
-    [draft.components, draft.dependencies],
+    () => positionsFor(draft.components, draft.dependencies, {}, !hasFeature(spec, "propagation_delay")),
+    [draft.components, draft.dependencies, spec],
   );
 
   // Highlight the blast radius of the selected component, and any cycle.
@@ -69,13 +70,13 @@ function Designer() {
 
   const [sizes, setSizes] = useState<Record<string, { width: number; height: number }>>({});
   const nodes = useMemo(
-    () => buildNodes(draft.components, positions, { selectedId: selection?.kind === "node" ? selection.id : null, flags })
+    () => buildNodes(spec, draft.components, positions, { selectedId: selection?.kind === "node" ? selection.id : null, flags })
       .map((n) => (sizes[n.id] ? { ...n, measured: sizes[n.id] } : n)),
-    [draft.components, positions, selection, flags, sizes],
+    [spec, draft.components, positions, selection, flags, sizes],
   );
   const edges = useMemo(
-    () => buildEdges(draft.dependencies, { selectedId: selection?.kind === "edge" ? selection.id : null }),
-    [draft.dependencies, selection],
+    () => buildEdges(spec, draft.dependencies, { selectedId: selection?.kind === "edge" ? selection.id : null }),
+    [spec, draft.dependencies, selection],
   );
 
   // ---- editing operations -------------------------------------------
@@ -111,15 +112,17 @@ function Designer() {
     setDraft((d) => ({ ...d, dependencies: d.dependencies.filter((x) => !ids.includes(depId(x))) }));
 
   const addComponent = (type: string) => {
-    const kind = kindOf(type);
+    const kind = entityType(spec, type);
     const id = uniqueId(type, draft.components.map((c) => c.id));
     const bounds = document.querySelector(".canvas")?.getBoundingClientRect();
     const center = bounds
       ? flow.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
       : { x: 0, y: 0 };
     const component: ComponentDef = {
-      id, name: kind.label, type, entry_point: type === "gateway" && !draft.components.some((c) => c.entry_point),
-      attributes: { ...kind.defaults }, layout: freeSpot({ x: center.x - 85, y: center.y - 40 }, Object.values(positions)),
+      id, name: kind.label, type,
+      entry_point: hasFeature(spec, "entry_points") && type === spec.entity_types[0]?.type
+        && !draft.components.some((c) => c.entry_point),
+      attributes: defaultAttributes(kind.fields), layout: freeSpot({ x: center.x - 85, y: center.y - 40 }, Object.values(positions)),
     };
     setDraft((d) => ({ ...d, components: [...d.components, component] }));
     setSelection({ kind: "node", id });
@@ -130,13 +133,15 @@ function Designer() {
     connectedRef.current = true;
     const id = `${c.source}->${c.target}`;
     if (draft.dependencies.some((d) => depId(d) === id)) {
-      toast("That dependency already exists");
+      toast("That connection already exists");
       return;
     }
+    const rel = spec.relationship_types[0];
     setDraft((d) => ({
       ...d,
       dependencies: [...d.dependencies, {
-        id, source_id: c.source, target_id: c.target, dependency_type: "requires", group: null, propagation_delay: 0,
+        id, source_id: c.source, target_id: c.target, dependency_type: rel?.type ?? "requires", group: null,
+        propagation_delay: 0, attributes: defaultAttributes(rel?.fields ?? []),
       }],
     }));
     setSelection({ kind: "edge", id });
@@ -190,7 +195,7 @@ function Designer() {
   };
 
   const autoLayout = () => {
-    const pos = layeredLayout(draft.components, draft.dependencies);
+    const pos = layeredLayout(draft.components, draft.dependencies, !hasFeature(spec, "propagation_delay"));
     setDraft((d) => ({ ...d, components: d.components.map((c) => ({ ...c, layout: pos[c.id] })) }));
     window.setTimeout(() => flow.fitView({ padding: 0.2, duration: 300 }), 50);
   };
@@ -225,11 +230,13 @@ function Designer() {
         name: parsed.name ?? draft.name,
         domain: parsed.domain ?? draft.domain,
         description: parsed.description ?? "",
+        parameters: parsed.parameters ?? draft.parameters ?? {},
         components: parsed.components.map((c: Partial<ComponentDef>) => ({
-          entry_point: false, attributes: {}, type: "service", ...c,
+          entry_point: false, attributes: {}, type: spec.entity_types[0]?.type ?? "service", ...c,
         }) as ComponentDef),
         dependencies: parsed.dependencies.map((d: Partial<DependencyDef>) => ({
-          dependency_type: "requires", group: null, propagation_delay: 0, ...d,
+          dependency_type: spec.relationship_types[0]?.type ?? "requires", group: null, propagation_delay: 0,
+          attributes: {}, ...d,
         }) as DependencyDef),
       });
       setJsonError(null);
@@ -259,8 +266,8 @@ function Designer() {
           {mode === "visual" && (
             <>
               <span className="muted small" style={{ marginLeft: 8 }}>Add:</span>
-              {COMPONENT_KINDS.map((k) => (
-                <button key={k.type} className="small" onClick={() => addComponent(k.type)} title={`Add ${k.label}`}>
+              {spec.entity_types.map((k) => (
+                <button key={k.type} className="small" onClick={() => addComponent(k.type)} title={k.description || `Add ${k.label}`}>
                   <span className="dot" style={{ background: k.color }} /> {k.label}
                 </button>
               ))}
@@ -295,19 +302,19 @@ function Designer() {
               fitViewOptions={{ padding: 0.25, maxZoom: 1.1 }}
               proOptions={{ hideAttribution: true }}
             >
-              <Background gap={20} color="#e5e7eb" />
+              <Background gap={24} size={1.4} color="rgba(255,226,180,.16)" />
               <Controls showInteractive={false} />
               <MiniMap pannable zoomable nodeStrokeWidth={3} style={{ height: 90, width: 140 }} />
             </ReactFlow>
             {draft.components.length === 0 && (
               <div className="empty" style={{ position: "absolute", inset: "30% 0 auto", pointerEvents: "none" }}>
                 <h2 style={{ color: "var(--text)" }}>Empty system</h2>
-                <p>Add components from the toolbar, then drag from a component's bottom handle<br />
-                  to the component it depends on.</p>
+                <p>Add {spec.entity_types.map((e) => e.label.toLowerCase()).slice(0, 3).join(", ")}… from the toolbar,
+                  then drag from a box's bottom handle to another box.<br />{spec.edge_meaning}</p>
               </div>
             )}
-            <div style={{ position: "absolute", left: 12, bottom: 12, background: "rgba(255,255,255,.9)", padding: "4px 8px", borderRadius: 6 }}>
-              <Legend />
+            <div className="canvas-chip" style={{ left: 12, bottom: 12 }}>
+              <Legend spec={spec} />
             </div>
           </div>
         ) : (
@@ -326,6 +333,7 @@ function Designer() {
       <aside className="inspector">
         {selectedComponent ? (
           <ComponentInspector
+            spec={spec}
             key={selectedComponent.id}
             component={selectedComponent}
             allIds={draft.components.map((c) => c.id)}
@@ -338,6 +346,7 @@ function Designer() {
           />
         ) : selectedDependency ? (
           <DependencyInspector
+            spec={spec}
             key={depId(selectedDependency)}
             dependency={selectedDependency}
             components={draft.components}
@@ -345,7 +354,7 @@ function Designer() {
             onDelete={() => { removeDependencies([depId(selectedDependency)]); setSelection(null); }}
           />
         ) : (
-          <SystemInspector draft={draft} analysis={analysis}
+          <SystemInspector spec={spec} draft={draft} analysis={analysis}
             onChange={(patch) => setDraft((d) => ({ ...d, ...patch }))} />
         )}
       </aside>

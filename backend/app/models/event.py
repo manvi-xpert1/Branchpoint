@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+# The infrastructure event types. Other domains add their own; the full
+# list comes from the domain registry (see ``_check_type``).
 EVENT_TYPES = {"component_failure", "component_recovery", "traffic_spike", "latency_increase"}
+
+
+def _check_type(event_id: str, event_type: str) -> None:
+    # Imported here, not at the top, because the domains package imports models.
+    from ..domains.registry import known_event_types
+
+    known = known_event_types() | EVENT_TYPES
+    if event_type not in known:
+        raise ValueError(f"Event {event_id}: unknown type {event_type!r}; expected one of {sorted(known)}")
 
 
 @dataclass
@@ -24,12 +35,11 @@ class Event:
     # < 1.0 makes the event probabilistic: each run samples whether it
     # happens, using the scenario's random seed.
     probability: float = 1.0
+    # Domain-specific settings (e.g. how many staff are unavailable).
+    params: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.type not in EVENT_TYPES:
-            raise ValueError(
-                f"Event {self.id}: unknown type {self.type!r}; expected one of {sorted(EVENT_TYPES)}"
-            )
+        _check_type(self.id, self.type)
         if self.start_time < 0:
             raise ValueError(f"Event {self.id}: start_time must be >= 0")
         if self.duration is not None and self.duration <= 0:
@@ -48,6 +58,7 @@ class Event:
             duration=None if duration is None else float(duration),
             severity=float(data.get("severity", 1.0)),
             probability=float(data.get("probability", 1.0)),
+            params=dict(data.get("params") or {}),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -59,4 +70,5 @@ class Event:
             "duration": self.duration,
             "severity": self.severity,
             "probability": self.probability,
+            "params": self.params,
         }

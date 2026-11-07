@@ -1,0 +1,25 @@
+example,scenario,kind,runs,seconds,log_entries
+ecommerce.json,baseline,single run,1,0.00017,0
+ecommerce.json,db-down,single run,1,0.00031,8
+ecommerce.json,db-down-cache-fallback,single run,1,0.00028,8
+ecommerce.json,db-down-replica,single run,1,0.00024,4
+ecommerce.json,db-down-fast-restore,single run,1,0.00025,8
+ecommerce.json,traffic-spike,single run,1,0.00021,4
+ecommerce.json,flaky,single run,1,0.00025,8
+ecommerce.json,db-down,monte carlo,100,0.0273,
+hospital.json,baseline,single run,1,0.01669,2
+hospital.json,surge,single run,1,0.0144,14
+hospital.json,surge-ward-beds,single run,1,0.01434,14
+hospital.json,surge-ed-bays,single run,1,0.01455,14
+hospital.json,surge-discharge,single run,1,0.01451,14
+hospital.json,surge-icu,single run,1,0.01807,14
+hospital.json,surge-sickness,single run,1,0.01447,16
+hospital.json,surge,monte carlo,100,1.5688,
+coldchain.json,baseline,single run,1,0.00625,0
+coldchain.json,outage,single run,1,0.00862,6
+coldchain.json,outage-generator,single run,1,0.00859,2
+coldchain.json,outage-lean,single run,1,0.00714,10
+coldchain.json,closure,single run,1,0.007,8
+coldchain.json,closure-safety-stock,single run,1,0.0072,5
+coldchain.json,heatwave,single run,1,0.00679,7
+coldchain.json,heatwave,monte carlo,100,0.7864,

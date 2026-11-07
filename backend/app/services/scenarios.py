@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import InterventionRow, ScenarioEventRow, ScenarioRow
+from ..domains.registry import get_domain
 from ..models import Event, ValidationError
 from ..schemas import EventIn, InterventionIn, ScenarioIn, ScenarioOut
 from ..simulation.branching import Intervention, Scenario
@@ -18,7 +19,8 @@ DEFAULT_SEED = 42
 # ---- conversion -------------------------------------------------------
 def _event_in(e: ScenarioEventRow) -> EventIn:
     return EventIn(id=e.key, type=e.type, target_id=e.target_key, start_time=e.start_time,
-                   duration=e.duration, severity=e.severity, probability=e.probability)
+                   duration=e.duration, severity=e.severity, probability=e.probability,
+                   params=e.params or {})
 
 
 def _intervention_in(i: InterventionRow) -> InterventionIn:
@@ -92,8 +94,18 @@ def check(row: ScenarioRow) -> None:
     for eid in scenario.remove_event_ids:
         if eid not in inherited:
             raise InvalidInput(f"{label}: remove_events lists {eid!r}, which no ancestor defines")
-    for event in scenario.resolved_events():
-        if event.target_id not in system.components:
+    domain = get_domain(system.domain)
+    events = scenario.resolved_events()
+    problems = domain.event_errors(events)
+    if problems:
+        raise InvalidInput(f"{label}: {problems[0]}")
+    targets_relationship = {t.type for t in domain.spec.event_types if t.target == "relationship"}
+    dependency_ids = {d.id for d in system.dependencies}
+    for event in events:
+        if event.type in targets_relationship:
+            if event.target_id not in dependency_ids:
+                raise InvalidInput(f"{label}: event {event.id!r} targets unknown relationship {event.target_id!r}")
+        elif event.target_id not in system.components:
             raise InvalidInput(f"{label}: event {event.id!r} targets unknown component {event.target_id!r}")
 
     for child in row.children:
@@ -150,7 +162,8 @@ def _write(db: Session, row: ScenarioRow, data: ScenarioIn) -> None:
     for i, e in enumerate(data.events):
         row.events.append(ScenarioEventRow(
             key=e.id, type=e.type, target_key=e.target_id, start_time=e.start_time,
-            duration=e.duration, severity=e.severity, probability=e.probability, position=i,
+            duration=e.duration, severity=e.severity, probability=e.probability,
+            params=e.params, position=i,
         ))
     for i, iv in enumerate(data.interventions):
         row.interventions.append(InterventionRow(

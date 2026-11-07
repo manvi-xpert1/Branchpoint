@@ -1,0 +1,279 @@
+{
+  "until": 72,
+  "system": {
+    "name": "City General: winter week",
+    "domain": "hospital",
+    "description": "Illustrative emergency and inpatient flow. Patient numbers, times and costs are made-up inputs for planning practice, not real hospital data, and the model makes no clinical claims.",
+    "components": [
+      {
+        "id": "arrivals",
+        "name": "Patient arrivals",
+        "type": "arrivals",
+        "attributes": {
+          "rate": 7
+        },
+        "entry_point": true,
+        "layout": {
+          "x": 0,
+          "y": 160
+        }
+      },
+      {
+        "id": "triage",
+        "name": "Triage",
+        "type": "triage",
+        "attributes": {
+          "capacity": 2,
+          "service_time": 0.1,
+          "cost_per_hour": 45
+        },
+        "layout": {
+          "x": 220,
+          "y": 160
+        }
+      },
+      {
+        "id": "ed",
+        "name": "Emergency dept.",
+        "type": "emergency",
+        "attributes": {
+          "capacity": 12,
+          "service_time": 1.5,
+          "max_wait": 4,
+          "hold_bed_while_waiting": true,
+          "cost_per_hour": 80,
+          "occupied_at_start": 6
+        },
+        "layout": {
+          "x": 460,
+          "y": 160
+        }
+      },
+      {
+        "id": "ward",
+        "name": "Medical ward",
+        "type": "ward",
+        "attributes": {
+          "capacity": 34,
+          "service_time": 20,
+          "hold_bed_while_waiting": true,
+          "cost_per_hour": 30,
+          "occupied_at_start": 29
+        },
+        "layout": {
+          "x": 720,
+          "y": 60
+        }
+      },
+      {
+        "id": "icu",
+        "name": "ICU",
+        "type": "icu",
+        "attributes": {
+          "capacity": 6,
+          "service_time": 24,
+          "hold_bed_while_waiting": true,
+          "cost_per_hour": 150,
+          "occupied_at_start": 4
+        },
+        "layout": {
+          "x": 720,
+          "y": 280
+        }
+      }
+    ],
+    "dependencies": [
+      {
+        "id": "arrivals->triage",
+        "source_id": "arrivals",
+        "target_id": "triage",
+        "dependency_type": "routes_to",
+        "attributes": {
+          "probability": 1
+        }
+      },
+      {
+        "id": "triage->ed",
+        "source_id": "triage",
+        "target_id": "ed",
+        "dependency_type": "routes_to",
+        "attributes": {
+          "probability": 0.9
+        }
+      },
+      {
+        "id": "ed->ward",
+        "source_id": "ed",
+        "target_id": "ward",
+        "dependency_type": "routes_to",
+        "attributes": {
+          "probability": 0.25
+        }
+      },
+      {
+        "id": "ed->icu",
+        "source_id": "ed",
+        "target_id": "icu",
+        "dependency_type": "routes_to",
+        "attributes": {
+          "probability": 0.03
+        }
+      },
+      {
+        "id": "ward->icu",
+        "source_id": "ward",
+        "target_id": "icu",
+        "dependency_type": "routes_to",
+        "attributes": {
+          "probability": 0.02
+        }
+      }
+    ],
+    "parameters": {}
+  },
+  "scenarios": [
+    {
+      "id": "baseline",
+      "name": "Normal winter week",
+      "seed": 7,
+      "events": [],
+      "interventions": []
+    },
+    {
+      "id": "surge",
+      "name": "Flu surge (+60% arrivals for a day)",
+      "parent": "baseline",
+      "events": [
+        {
+          "id": "flu",
+          "type": "arrival_surge",
+          "target_id": "arrivals",
+          "start_time": 24,
+          "duration": 24,
+          "severity": 1.6
+        }
+      ],
+      "interventions": []
+    },
+    {
+      "id": "surge-ward-beds",
+      "name": "Surge + 10 escalation beds on the ward",
+      "parent": "surge",
+      "events": [],
+      "interventions": [
+        {
+          "id": "beds",
+          "type": "set_attribute",
+          "params": {
+            "component_id": "ward",
+            "key": "capacity",
+            "value": 44
+          },
+          "cost": 3000,
+          "description": "Open an escalation bay"
+        }
+      ]
+    },
+    {
+      "id": "surge-ed-bays",
+      "name": "Surge + 4 extra ED bays",
+      "parent": "surge",
+      "events": [],
+      "interventions": [
+        {
+          "id": "bays",
+          "type": "set_attribute",
+          "params": {
+            "component_id": "ed",
+            "key": "capacity",
+            "value": 16
+          },
+          "cost": 2500,
+          "description": "Agency staff for 4 bays"
+        }
+      ]
+    },
+    {
+      "id": "surge-discharge",
+      "name": "Surge + faster discharges (discharge lounge)",
+      "parent": "surge",
+      "events": [],
+      "interventions": [
+        {
+          "id": "lounge",
+          "type": "set_attribute",
+          "params": {
+            "component_id": "ward",
+            "key": "service_time",
+            "value": 16
+          },
+          "cost": 1500,
+          "description": "Discharge lounge and weekend discharge team"
+        }
+      ]
+    },
+    {
+      "id": "surge-icu",
+      "name": "Surge + 2 extra ICU beds",
+      "parent": "surge",
+      "events": [],
+      "interventions": [
+        {
+          "id": "icu_beds",
+          "type": "set_attribute",
+          "params": {
+            "component_id": "icu",
+            "key": "capacity",
+            "value": 8
+          },
+          "cost": 4000,
+          "description": "Open two step-up beds"
+        }
+      ]
+    },
+    {
+      "id": "surge-sickness",
+      "name": "Surge + possible ED staff sickness",
+      "parent": "surge",
+      "events": [
+        {
+          "id": "sick",
+          "type": "staff_shortage",
+          "target_id": "ed",
+          "start_time": 30,
+          "duration": 12,
+          "severity": 4,
+          "probability": 0.5
+        }
+      ],
+      "interventions": []
+    }
+  ],
+  "objectives": {
+    "objectives": [
+      {
+        "metric": "mean_wait",
+        "weight": 3
+      },
+      {
+        "metric": "left_without_treatment",
+        "weight": 2
+      },
+      {
+        "metric": "boarding_time",
+        "weight": 1
+      },
+      {
+        "metric": "total_cost",
+        "weight": 1
+      }
+    ],
+    "constraints": [
+      {
+        "metric": "left_rate",
+        "op": "<=",
+        "value": 0.1
+      }
+    ]
+  }
+}

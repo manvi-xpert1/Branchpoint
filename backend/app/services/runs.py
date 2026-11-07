@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 
 from ..database import ScenarioRow, SimulationEventRow, SimulationRunRow
 from ..models import Event, System
-from ..schemas import CompareOut, LogEntryOut, Metrics, ReplayOut, RunOut, RunSummary
+from ..domains.registry import get_domain
+from ..schemas import CompareOut, LogEntryOut, ReplayOut, RunOut, RunSummary
 from ..simulation.branching import Intervention, Scenario, SimulationResult, run_scenario
 from ..simulation.engine import SimulationError
 from . import scenarios, systems
@@ -26,7 +27,12 @@ def _simulate(system: System, scenario: Scenario, until: float) -> tuple[Simulat
 
 
 def _timelines(result: SimulationResult) -> dict[str, list[list]]:
-    return {cid: [[t, str(s)] for t, s in tl] for cid, tl in result.state.timeline.items()}
+    return {cid: [[t, str(s)] for t, s in tl] for cid, tl in result.timelines.items()}
+
+
+def _series(result: SimulationResult) -> dict[str, dict[str, list[list]]]:
+    return {eid: {var: [[t, v] for t, v in points] for var, points in variables.items()}
+            for eid, variables in result.series.items()}
 
 
 def execute(db: Session, scenario_row: ScenarioRow, until: float) -> SimulationRunRow:
@@ -54,6 +60,7 @@ def execute(db: Session, scenario_row: ScenarioRow, until: float) -> SimulationR
         metrics=result.metrics.to_dict(),
         skipped_events=result.skipped_events,
         timelines=_timelines(result),
+        series=_series(result),
         elapsed_ms=round(elapsed_ms, 3),
     )
     for entry in result.log:
@@ -94,7 +101,8 @@ def to_summary(row: SimulationRunRow) -> RunSummary:
     return RunSummary(
         id=row.id, scenario_id=row.scenario_id,
         scenario_name=row.scenario_snapshot.get("name", ""), status=row.status,
-        seed=row.seed, until=row.until, metrics=Metrics(**row.metrics),
+        domain=row.system_snapshot.get("domain", "software_infrastructure"),
+        seed=row.seed, until=row.until, metrics=dict(row.metrics),
         elapsed_ms=row.elapsed_ms, created_at=row.created_at,
     )
 
@@ -113,6 +121,7 @@ def to_schema(row: SimulationRunRow) -> RunOut:
         system=effective_system(row),
         skipped_events=list(row.skipped_events or []),
         timelines={k: [tuple(p) for p in v] for k, v in (row.timelines or {}).items()},
+        series=row.series or {},
         log=[_log_out(e) for e in row.log],
     )
 
@@ -157,16 +166,6 @@ def replay(row: SimulationRunRow) -> ReplayOut:
 
 # ---- comparison -------------------------------------------------------
 # metric -> True if higher is better
-_DIRECTION = {
-    "availability": True,
-    "downtime": False,
-    "degraded_time": False,
-    "affected_components": False,
-    "recovery_time": False,
-    "cost": False,
-}
-
-
 def compare(db: Session, run_ids: list[str] | None, scenario_ids: list[str] | None,
             until: float) -> CompareOut:
     if scenario_ids:
@@ -176,17 +175,22 @@ def compare(db: Session, run_ids: list[str] | None, scenario_ids: list[str] | No
         if len({r.until for r in rows}) > 1:
             raise InvalidInput("Runs used different durations (until); their metrics are not comparable")
     summaries = [to_summary(r) for r in rows]
+    domains = {s.domain for s in summaries}
+    if len(domains) > 1:
+        raise InvalidInput(f"Runs come from different domains ({', '.join(sorted(domains))}); "
+                           "their metrics are not comparable")
 
+    # The domain catalog says whether lower or higher is better for each metric.
     best: dict[str, list[str]] = {}
-    for metric, higher in _DIRECTION.items():
-        values = {s.id: getattr(s.metrics, metric) for s in summaries}
-        if metric == "recovery_time":
-            # Only runs that had an incident and recovered are candidates.
-            values = {k: v for k, v in values.items()
-                      if v is not None
-                      and next(s for s in summaries if s.id == k).metrics.affected_components > 0}
+    spec = get_domain(domains.pop()).spec if summaries else None
+    for metric in spec.metrics if spec else []:
+        if metric.better == "neutral":
+            continue
+        # None means "not applicable" (e.g. no recovery because nothing broke).
+        values = {s.id: s.metrics.get(metric.key) for s in summaries}
+        values = {k: v for k, v in values.items() if v is not None}
         if not values:
             continue
-        target = (max if higher else min)(values.values())
-        best[metric] = [k for k, v in values.items() if v == target]
+        target = (max if metric.better == "higher" else min)(values.values())
+        best[metric.key] = [k for k, v in values.items() if v == target]
     return CompareOut(runs=summaries, best=best)

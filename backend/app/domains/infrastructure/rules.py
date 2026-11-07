@@ -6,6 +6,9 @@ Rules in plain English:
 * A latency event makes it DEGRADED.
 * A traffic spike multiplies its load. Above capacity it is DEGRADED;
   above ``capacity * overload_failure_ratio`` (default 1.5) it is FAILED.
+* Load flow (opt-in): a dependency with a ``load_share`` attribute forwards
+  that share of the caller's *extra* load (above its normal
+  ``current_load``) to the target, as an ``inherited_load`` effect.
 * Dependencies are grouped. A dependency with no ``group`` is its own
   group. Within a group the component only needs ONE member to be up,
   which is how replicas and fallbacks work.
@@ -30,7 +33,7 @@ class InfrastructureRules(DomainRules):
 
     def intrinsic_status(self, component: Component, effects: list[Effect]) -> Verdict:
         worst = Verdict(Status.HEALTHY, "operating normally")
-        multiplier = 1.0
+        multiplier, extra = 1.0, 0.0
         for effect in effects:
             if effect.type == "component_failure":
                 return Verdict(Status.FAILED, f"failed ({effect.event_id})")
@@ -38,18 +41,29 @@ class InfrastructureRules(DomainRules):
                 worst = Verdict(Status.DEGRADED, f"high latency ({effect.event_id})")
             if effect.type == "traffic_spike":
                 multiplier *= effect.severity
+            if effect.type == "inherited_load":
+                extra += effect.severity
 
-        if multiplier != 1.0:
+        if multiplier != 1.0 or extra:
             attrs = component.attributes
             capacity = attrs.get("capacity")
             if capacity:
-                load = attrs.get("current_load", 0) * multiplier
+                load = attrs.get("current_load", 0) * multiplier + extra
                 ratio = attrs.get("overload_failure_ratio", 1.5)
                 if load > capacity * ratio:
                     return Verdict(Status.FAILED, f"overloaded: load {load:g} > {capacity * ratio:g}")
                 if load > capacity and worst.status < Status.DEGRADED:
                     worst = Verdict(Status.DEGRADED, f"over capacity: load {load:g} > {capacity:g}")
         return worst
+
+    @staticmethod
+    def load_of(component: Component, effects: list[Effect]) -> float:
+        """Current load: normal load x spike multipliers + load forwarded from callers."""
+        load = float(component.attributes.get("current_load", 0) or 0)
+        for effect in effects:
+            if effect.type == "traffic_spike":
+                load *= effect.severity
+        return load + sum(e.severity for e in effects if e.type == "inherited_load")
 
     def effective_status(
         self,

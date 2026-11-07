@@ -1,5 +1,8 @@
 """API tests: the MVP acceptance workflow over HTTP, plus validation and errors."""
 
+import json
+from pathlib import Path
+
 import pytest
 
 SIMPLE = {
@@ -329,3 +332,235 @@ def test_deleting_a_system_removes_its_monte_carlo_runs(client, imported):
     mc = client.post(f"/api/scenarios/{flaky['id']}/montecarlo", json={"runs": 5}).json()
     assert client.delete(f"/api/systems/{imported['system_id']}").status_code == 204
     assert client.get(f"/api/montecarlo/{mc['id']}").status_code == 404
+
+
+# ---- Phase 2: domains and free-form data -----------------------------------------
+def test_domains_endpoint_serves_the_catalog(client):
+    domains = client.get("/api/domains").json()
+    infra = next(d for d in domains if d["name"] == "software_infrastructure")
+    assert {m["key"] for m in infra["metrics"]} >= {"availability", "downtime", "cost"}
+    assert next(m for m in infra["metrics"] if m["key"] == "availability")["better"] == "higher"
+    assert infra["assumptions"]
+    assert client.get("/api/domains/software_infrastructure").json()["label"] == "Software infrastructure"
+    assert client.get("/api/domains/weather").status_code == 404
+
+
+def test_parameters_and_relationship_attributes_are_saved(client):
+    body = {
+        "name": "Params", "parameters": {"traffic_multiplier": 2},
+        "components": [{"id": "a", "entry_point": True}, {"id": "b"}],
+        "dependencies": [{"source_id": "a", "target_id": "b", "attributes": {"note": "x"}}],
+    }
+    sid = client.post("/api/systems", json=body).json()["id"]
+    saved = client.get(f"/api/systems/{sid}").json()
+    assert saved["parameters"] == {"traffic_multiplier": 2}
+    assert saved["dependencies"][0]["attributes"] == {"note": "x"}
+    exported = client.get(f"/api/systems/{sid}/export").json()
+    assert exported["system"]["parameters"] == {"traffic_multiplier": 2}
+
+
+def test_event_params_are_saved_and_runs_include_series_and_domain(client, imported):
+    sid = by_name(client, imported["system_id"])["DB fails, no intervention"]["id"]
+    scenario = client.get(f"/api/scenarios/{sid}").json()
+    event = {**scenario["events"][0], "params": {"note": "disk full"}}
+    body = {k: scenario[k] for k in ("name", "description", "parent_id", "seed", "remove_events", "interventions")}
+    r = client.put(f"/api/scenarios/{sid}", json={**body, "events": [event]})
+    assert r.status_code == 200, r.text
+    assert r.json()["events"][0]["params"] == {"note": "disk full"}
+    run = client.post(f"/api/scenarios/{sid}/runs", json={"until": 30}).json()
+    assert run["domain"] == "software_infrastructure" and run["series"] == {}
+
+
+def test_unknown_types_are_rejected_with_422(client):
+    r = client.post("/api/systems", json={"name": "x", "components": [{"id": "a"}, {"id": "b"}],
+                                          "dependencies": [{"source_id": "a", "target_id": "b",
+                                                            "dependency_type": "sometimes"}]})
+    assert r.status_code == 422
+    r = client.post("/api/systems", json={"name": "x", "domain": "weather"})
+    assert r.status_code == 422
+
+
+# ---- decision layer (Phase 3) -----------------------------------------------
+def db_down_branches(imported):
+    ids = imported["scenario_ids"]
+    return [ids[k] for k in ("db-down", "db-down-cache-fallback", "db-down-replica", "db-down-fast-restore")]
+
+
+def test_objectives_default_save_and_reset(client, imported):
+    sid = imported["system_id"]
+    default = client.get(f"/api/systems/{sid}/objectives").json()
+    assert default["is_default"] and default["objectives"][0] == {"metric": "downtime", "weight": 3.0,
+                                                                  "direction": None}
+    model = {"objectives": [{"metric": "downtime", "weight": 2}, {"metric": "cost"}],
+             "constraints": [{"metric": "availability", "op": ">=", "value": 0.95}]}
+    saved = client.put(f"/api/systems/{sid}/objectives", json=model).json()
+    assert not saved["is_default"] and saved["constraints"][0]["value"] == 0.95
+    assert client.get(f"/api/systems/{sid}/objectives").json() == saved
+    assert client.put(f"/api/systems/{sid}/objectives").json()["is_default"]  # empty body resets
+
+
+@pytest.mark.parametrize("bad", [
+    {"objectives": [{"metric": "happiness"}]},
+    {"objectives": [{"metric": "downtime", "weight": 0}]},
+    {"objectives": [], "constraints": [{"metric": "downtime", "op": "<=", "value": 1}]},
+    {"objectives": [{"metric": "downtime", "weight": -1}]},
+])
+def test_invalid_objectives_are_rejected(client, imported, bad):
+    assert client.put(f"/api/systems/{imported['system_id']}/objectives", json=bad).status_code == 422
+
+
+def test_evaluate_ranks_the_db_failure_decisions(client, imported):
+    """Default objectives: downtime x3, degraded time x1, intervention cost x1 (scores checked by hand)."""
+    ids = imported["scenario_ids"]
+    ev = client.post(f"/api/systems/{imported['system_id']}/evaluate",
+                     json={"scenario_ids": db_down_branches(imported)}).json()
+    order = [f["id"] for f in ev["futures"]]
+    assert order == [ids["db-down-fast-restore"], ids["db-down-replica"], ids["db-down-cache-fallback"], ids["db-down"]]
+    assert [round(f["score"], 3) for f in ev["futures"]] == [0.82, 0.8, 0.767, 0.4]
+    assert ev["recommended"] == ids["db-down-fast-restore"]
+    assert ev["baseline_id"] == ids["db-down"]  # the scenario the others branch from
+    assert ev["skipped_objectives"] == ["mean_latency", "running_cost"]  # no latency or cost data
+    by_id = {f["id"]: f for f in ev["futures"]}
+    assert not by_id[ids["db-down"]]["pareto"]
+    assert by_id[ids["db-down"]]["dominated_by"] == [ids["db-down-fast-restore"]]
+    assert by_id[ids["db-down-replica"]]["metrics"]["cost"] == 300
+    kinds = {i["kind"] for i in ev["insights"]}
+    assert {"recommendation", "tradeoff", "dominated", "opportunity"} <= kinds
+
+
+def test_a_constraint_changes_the_recommendation_and_unsaved_models_can_be_tried(client, imported):
+    ids = imported["scenario_ids"]
+    model = {"objectives": [{"metric": "downtime", "weight": 3}, {"metric": "degraded_time"}, {"metric": "cost"}],
+             "constraints": [{"metric": "availability", "op": ">=", "value": 0.95}]}
+    ev = client.post(f"/api/systems/{imported['system_id']}/evaluate",
+                     json={"scenario_ids": db_down_branches(imported), "model": model}).json()
+    assert ev["recommended"] == ids["db-down-replica"]  # fast restore only reaches 90%
+    restore = next(f for f in ev["futures"] if f["id"] == ids["db-down-fast-restore"])
+    assert not restore["feasible"] and restore["constraints"][0]["value"] == 0.9
+    # trying a model does not save it
+    assert client.get(f"/api/systems/{imported['system_id']}/objectives").json()["is_default"]
+
+
+def test_evaluate_with_monte_carlo_reports_spread_and_drivers(client, imported):
+    ids = imported["scenario_ids"]
+    ev = client.post(f"/api/systems/{imported['system_id']}/evaluate",
+                     json={"scenario_ids": [ids["baseline"], ids["flaky"]], "runs": 300}).json()
+    flaky = next(f for f in ev["futures"] if f["id"] == ids["flaky"])
+    assert flaky["stats"]["downtime"]["p95"] == 14 and flaky["risk"]["metric"] == "downtime"
+    assert flaky["drivers"][0]["event_id"] == "db_outage"
+    assert ev["recommended"] == ids["baseline"]
+    assert any(i["kind"] == "risk" for i in ev["insights"])
+
+
+def test_evaluate_errors(client, imported):
+    other = client.post("/api/systems", json=SIMPLE).json()["id"]
+    assert client.post(f"/api/systems/{other}/evaluate", json={}).status_code == 422  # no scenarios
+    r = client.post(f"/api/systems/{other}/evaluate", json={"scenario_ids": [imported["scenario_ids"]["baseline"]]})
+    assert r.status_code == 422 and "another system" in r.json()["detail"]
+    assert client.post("/api/systems/nope/evaluate", json={}).status_code == 404
+
+
+def test_sensitivity_endpoint(client, imported):
+    sid = imported["scenario_ids"]["flaky"]
+    out = client.post(f"/api/scenarios/{sid}/sensitivity", json={"runs": 100}).json()
+    assert out["metric"] == "downtime" and out["runs"] == 100
+    swings = [r["swing"] for r in out["rows"]]
+    assert swings == sorted(swings, reverse=True) and swings[0] > 0
+    assert {r["id"] for r in out["rows"][:2]} <= {"event:db_outage:probability", "attribute:postgres:recovery_time",
+                                                  "event:db_outage:duration"}
+    assert client.post(f"/api/scenarios/{sid}/sensitivity", json={"metric": "nope"}).status_code == 422
+
+
+def test_monte_carlo_reports_every_metric(client, imported):
+    mc = client.post(f"/api/scenarios/{imported['scenario_ids']['flaky']}/montecarlo", json={"runs": 200}).json()
+    assert mc["risk_metric"] == "downtime" and len(mc["risk_values"]) == 200
+    assert mc["metric_stats"]["availability"]["mean"] == pytest.approx(mc["aggregates"]["availability_mean"])
+    assert mc["drivers"][0]["event_id"] == "db_outage"
+
+
+def test_objectives_survive_export_and_import(client, imported):
+    sid = imported["system_id"]
+    model = {"objectives": [{"metric": "cost", "weight": 1}], "constraints": []}
+    client.put(f"/api/systems/{sid}/objectives", json=model)
+    exported = client.get(f"/api/systems/{sid}/export").json()
+    assert exported["objectives"]["objectives"][0]["metric"] == "cost"
+    new_id = client.post("/api/experiments/import", json=exported).json()["system_id"]
+    assert client.get(f"/api/systems/{new_id}/objectives").json()["objectives"][0]["metric"] == "cost"
+
+
+# ---- hospital and cold chain through the API (Phases 5-6) -------------------
+EXAMPLES = Path(__file__).resolve().parents[3] / "examples"
+
+
+@pytest.mark.parametrize("name, domain, decisions", [
+    ("hospital.json", "hospital", ["surge", "surge-ward-beds", "surge-ed-bays", "surge-icu"]),
+    ("coldchain.json", "cold_chain", ["outage", "outage-generator", "outage-lean"]),
+])
+def test_every_domain_works_end_to_end(client, name, domain, decisions):
+    data = json.loads((EXAMPLES / name).read_text())
+    imported = client.post("/api/experiments/import", json=data)
+    assert imported.status_code == 201, imported.text
+    ids = imported.json()["scenario_ids"]
+    sid = imported.json()["system_id"]
+    assert client.get(f"/api/systems/{sid}").json()["domain"] == domain
+    assert not client.get(f"/api/systems/{sid}/objectives").json()["is_default"]  # the example's own
+
+    run = client.post(f"/api/scenarios/{ids[decisions[0]]}/runs", json={"until": data["until"]}).json()
+    assert run["domain"] == domain and run["log"] and run["series"]
+    assert client.post(f"/api/runs/{run['id']}/replay").json()["identical"]
+    status_change = next(e for e in run["log"] if e["kind"] == "status_change")
+    assert client.get(f"/api/runs/{run['id']}/explain/{status_change['seq']}").status_code == 200
+
+    ev = client.post(f"/api/systems/{sid}/evaluate", json={
+        "scenario_ids": [ids[d] for d in decisions], "until": data["until"]}).json()
+    assert ev["domain"] == domain and len(ev["futures"]) == len(decisions)
+    assert ev["baseline_id"] == ids[decisions[0]] and ev["insights"]
+
+    cmp = client.post("/api/compare", json={"scenario_ids": [ids[d] for d in decisions], "until": data["until"]})
+    assert cmp.status_code == 200
+    mc = client.post(f"/api/scenarios/{ids[decisions[0]]}/montecarlo", json={"runs": 5, "until": data["until"]}).json()
+    assert mc["aggregates"] is None and mc["domain"] == domain and len(mc["risk_values"]) == 5
+    sens = client.post(f"/api/scenarios/{ids[decisions[0]]}/sensitivity", json={"until": data["until"]})
+    assert sens.status_code == 200 and sens.json()["rows"]
+
+
+def test_domain_rules_are_enforced_on_save(client):
+    bad = {"name": "x", "domain": "hospital",
+           "components": [{"id": "a", "type": "arrivals", "attributes": {"rate": 1}}, {"id": "w", "type": "ward"}],
+           "dependencies": [{"source_id": "a", "target_id": "w", "dependency_type": "routes_to",
+                             "attributes": {"probability": 2}}]}
+    r = client.post("/api/systems", json=bad)
+    assert r.status_code == 422 and "between 0 and 1" in r.json()["detail"]
+    mixed = {"name": "x", "domain": "cold_chain", "components": [{"id": "db", "type": "database"}]}
+    assert client.post("/api/systems", json=mixed).status_code == 422
+
+
+def test_compare_rejects_mixed_domains(client, imported):
+    data = json.loads((EXAMPLES / "hospital.json").read_text())
+    h = client.post("/api/experiments/import", json=data).json()
+    r = client.post("/api/compare", json={"scenario_ids": [imported["scenario_ids"]["baseline"],
+                                                           h["scenario_ids"]["baseline"]], "until": 30})
+    assert r.status_code == 422
+
+
+def test_runs_with_gaps_in_a_time_series_can_be_read(client):
+    """Latency has no value while the service is down; the run must still load (regression test)."""
+    system = {"name": "lat", "components": [
+        {"id": "api", "type": "gateway", "entry_point": True, "attributes": {"latency": 5}},
+        {"id": "db", "type": "database", "attributes": {"latency": 10}}],
+        "dependencies": [{"source_id": "api", "target_id": "db"}]}
+    sid = client.post("/api/systems", json=system).json()["id"]
+    scenario = client.post(f"/api/systems/{sid}/scenarios", json={"name": "down", "events": [
+        {"id": "f", "type": "component_failure", "target_id": "db", "start_time": 2, "duration": 3}]}).json()
+    run = client.post(f"/api/scenarios/{scenario['id']}/runs", json={"until": 10}).json()
+    assert [2, None] in run["series"]["latency"]["entry points"]
+    assert client.get(f"/api/runs/{run['id']}").status_code == 200
+
+
+def test_requests_that_would_run_too_many_simulations_are_refused(client, imported, monkeypatch):
+    r = client.post(f"/api/systems/{imported['system_id']}/evaluate", json={"runs": 5000})
+    assert r.status_code == 422 and "limit per request" in r.json()["detail"]
+    from app.services import decisions
+    monkeypatch.setattr(decisions, "MAX_SIMULATIONS", 100)
+    r = client.post(f"/api/scenarios/{imported['scenario_ids']['flaky']}/sensitivity", json={"runs": 20})
+    assert r.status_code == 422 and "limit is" in r.json()["detail"]

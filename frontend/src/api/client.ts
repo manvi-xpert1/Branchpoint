@@ -1,5 +1,11 @@
 import type {
   CompareOut,
+  DecisionModel,
+  DecisionModelOut,
+  DomainSpec,
+  EvaluateRequest,
+  EvaluationOut,
+  SensitivityOut,
   ImportOut,
   LogEntry,
   MonteCarloOut,
@@ -47,6 +53,8 @@ function formatDetail(detail: unknown): string {
 }
 
 export const api = {
+  listDomains: () => request<DomainSpec[]>("GET", "/domains"),
+
   listSystems: () => request<SystemSummary[]>("GET", "/systems"),
   getSystem: (id: string) => request<SystemOut>("GET", `/systems/${id}`),
   createSystem: (def: SystemDef) => request<SystemOut>("POST", "/systems", def),
@@ -77,4 +85,13 @@ export const api = {
       { runs, until, base_seed: baseSeed ?? null }),
   listMonteCarlo: (scenarioId: string) =>
     request<MonteCarloOut[]>("GET", `/scenarios/${scenarioId}/montecarlo`),
+
+  getObjectives: (systemId: string) => request<DecisionModelOut>("GET", `/systems/${systemId}/objectives`),
+  /** Pass null to reset to the domain's defaults. */
+  setObjectives: (systemId: string, model: DecisionModel | null) =>
+    request<DecisionModelOut>("PUT", `/systems/${systemId}/objectives`, model ?? undefined),
+  evaluate: (systemId: string, req: EvaluateRequest) =>
+    request<EvaluationOut>("POST", `/systems/${systemId}/evaluate`, req),
+  sensitivity: (scenarioId: string, req: { until: number; metric?: string | null; delta?: number; runs?: number }) =>
+    request<SensitivityOut>("POST", `/scenarios/${scenarioId}/sensitivity`, req),
 };

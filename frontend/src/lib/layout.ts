@@ -11,7 +11,7 @@ const ROW = 150;
  * depends on it. Dependencies therefore always point downwards.
  * Cycles are tolerated: a node is never pushed down twice along one path.
  */
-export function layeredLayout(components: ComponentDef[], deps: DependencyDef[]): Record<string, Point> {
+export function layeredLayout(components: ComponentDef[], deps: DependencyDef[], horizontal = false): Record<string, Point> {
   const ids = components.map((c) => c.id);
   const known = new Set(ids);
   const dependsOn = new Map<string, string[]>(ids.map((id) => [id, []]));
@@ -43,8 +43,14 @@ export function layeredLayout(components: ComponentDef[], deps: DependencyDef[])
   const widest = Math.max(1, ...[...rows.values()].map((r) => r.length));
   const out: Record<string, Point> = {};
   for (const [l, row] of rows) {
-    const offset = ((widest - row.length) * COL) / 2;
-    row.forEach((id, i) => (out[id] = { x: offset + i * COL, y: l * ROW }));
+    if (horizontal) {
+      // Flow domains read left to right: each level is a column.
+      const offset = ((widest - row.length) * 120) / 2;
+      row.forEach((id, i) => (out[id] = { x: l * 260, y: offset + i * 120 }));
+    } else {
+      const offset = ((widest - row.length) * COL) / 2;
+      row.forEach((id, i) => (out[id] = { x: offset + i * COL, y: l * ROW }));
+    }
   }
   return out;
 }
@@ -54,8 +60,9 @@ export function positionsFor(
   components: ComponentDef[],
   deps: DependencyDef[],
   saved: Record<string, Point | null | undefined> = {},
+  horizontal = false,
 ): Record<string, Point> {
-  const auto = layeredLayout(components, deps);
+  const auto = layeredLayout(components, deps, horizontal);
   const out: Record<string, Point> = {};
   for (const c of components) out[c.id] = saved[c.id] ?? c.layout ?? auto[c.id];
   return out;

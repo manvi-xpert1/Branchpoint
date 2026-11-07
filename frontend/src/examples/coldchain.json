@@ -1,0 +1,426 @@
+{
+  "until": 168,
+  "system": {
+    "name": "FreshCo chilled network",
+    "domain": "cold_chain",
+    "description": "Illustrative chilled-food network. Quantities, times and costs are made-up inputs. 'Discarded' means exposure passed the tolerance set below; Branchpoint does not judge product safety.",
+    "components": [
+      {
+        "id": "supplier",
+        "name": "Dairy supplier",
+        "type": "supplier",
+        "attributes": {
+          "lead_time": 24
+        },
+        "layout": {
+          "x": 0,
+          "y": 200
+        }
+      },
+      {
+        "id": "warehouse",
+        "name": "Central cold store",
+        "type": "warehouse",
+        "attributes": {
+          "inventory": 3000,
+          "reorder_point": 1500,
+          "order_quantity": 2000,
+          "holding_cost": 0.005,
+          "backup_power_hours": 4
+        },
+        "layout": {
+          "x": 230,
+          "y": 200
+        }
+      },
+      {
+        "id": "dc_north",
+        "name": "DC North",
+        "type": "distribution",
+        "attributes": {
+          "inventory": 350,
+          "reorder_point": 220,
+          "order_quantity": 300,
+          "holding_cost": 0.01,
+          "backup_power_hours": 0
+        },
+        "layout": {
+          "x": 480,
+          "y": 80
+        }
+      },
+      {
+        "id": "dc_south",
+        "name": "DC South",
+        "type": "distribution",
+        "attributes": {
+          "inventory": 350,
+          "reorder_point": 220,
+          "order_quantity": 300,
+          "holding_cost": 0.01,
+          "backup_power_hours": 2
+        },
+        "layout": {
+          "x": 480,
+          "y": 320
+        }
+      },
+      {
+        "id": "store1",
+        "name": "Store 1",
+        "type": "store",
+        "attributes": {
+          "demand_rate": 6,
+          "inventory": 90,
+          "reorder_point": 50,
+          "order_quantity": 80,
+          "holding_cost": 0.02,
+          "backup_power_hours": 0
+        },
+        "layout": {
+          "x": 740,
+          "y": 0
+        }
+      },
+      {
+        "id": "store2",
+        "name": "Store 2",
+        "type": "store",
+        "attributes": {
+          "demand_rate": 6,
+          "inventory": 90,
+          "reorder_point": 50,
+          "order_quantity": 80,
+          "holding_cost": 0.02,
+          "backup_power_hours": 0
+        },
+        "layout": {
+          "x": 740,
+          "y": 140
+        }
+      },
+      {
+        "id": "store3",
+        "name": "Store 3",
+        "type": "store",
+        "attributes": {
+          "demand_rate": 5,
+          "inventory": 90,
+          "reorder_point": 50,
+          "order_quantity": 80,
+          "holding_cost": 0.02,
+          "backup_power_hours": 0
+        },
+        "layout": {
+          "x": 740,
+          "y": 280
+        }
+      },
+      {
+        "id": "store4",
+        "name": "Store 4",
+        "type": "store",
+        "attributes": {
+          "demand_rate": 4,
+          "inventory": 90,
+          "reorder_point": 50,
+          "order_quantity": 80,
+          "holding_cost": 0.02,
+          "backup_power_hours": 0
+        },
+        "layout": {
+          "x": 740,
+          "y": 420
+        }
+      }
+    ],
+    "dependencies": [
+      {
+        "id": "supplier->warehouse",
+        "source_id": "supplier",
+        "target_id": "warehouse",
+        "dependency_type": "ships_to",
+        "attributes": {
+          "travel_time": 12,
+          "cost_per_unit": 0.2
+        }
+      },
+      {
+        "id": "warehouse->dc_north",
+        "source_id": "warehouse",
+        "target_id": "dc_north",
+        "dependency_type": "ships_to",
+        "attributes": {
+          "travel_time": 6,
+          "cost_per_unit": 0.3
+        }
+      },
+      {
+        "id": "warehouse->dc_south",
+        "source_id": "warehouse",
+        "target_id": "dc_south",
+        "dependency_type": "ships_to",
+        "attributes": {
+          "travel_time": 7,
+          "cost_per_unit": 0.3
+        }
+      },
+      {
+        "id": "dc_north->store1",
+        "source_id": "dc_north",
+        "target_id": "store1",
+        "dependency_type": "ships_to",
+        "attributes": {
+          "travel_time": 2,
+          "cost_per_unit": 0.4
+        }
+      },
+      {
+        "id": "dc_north->store2",
+        "source_id": "dc_north",
+        "target_id": "store2",
+        "dependency_type": "ships_to",
+        "attributes": {
+          "travel_time": 2,
+          "cost_per_unit": 0.4
+        }
+      },
+      {
+        "id": "dc_south->store3",
+        "source_id": "dc_south",
+        "target_id": "store3",
+        "dependency_type": "ships_to",
+        "attributes": {
+          "travel_time": 2,
+          "cost_per_unit": 0.4
+        }
+      },
+      {
+        "id": "dc_south->store4",
+        "source_id": "dc_south",
+        "target_id": "store4",
+        "dependency_type": "ships_to",
+        "attributes": {
+          "travel_time": 2,
+          "cost_per_unit": 0.4
+        }
+      },
+      {
+        "id": "dc_south->store2",
+        "source_id": "dc_south",
+        "target_id": "store2",
+        "dependency_type": "ships_to",
+        "attributes": {
+          "travel_time": 5,
+          "cost_per_unit": 0.6
+        }
+      },
+      {
+        "id": "dc_north->store3",
+        "source_id": "dc_north",
+        "target_id": "store3",
+        "dependency_type": "ships_to",
+        "attributes": {
+          "travel_time": 5,
+          "cost_per_unit": 0.6
+        }
+      },
+      {
+        "id": "warehouse->store1",
+        "source_id": "warehouse",
+        "target_id": "store1",
+        "dependency_type": "ships_to",
+        "attributes": {
+          "travel_time": 9,
+          "cost_per_unit": 0.8
+        }
+      }
+    ],
+    "parameters": {
+      "max_excursion_hours": 2,
+      "unit_value": 6
+    }
+  },
+  "scenarios": [
+    {
+      "id": "baseline",
+      "name": "Normal week",
+      "seed": 11,
+      "events": [],
+      "interventions": []
+    },
+    {
+      "id": "outage",
+      "name": "Power cut at DC North (10 h)",
+      "parent": "baseline",
+      "events": [
+        {
+          "id": "power_cut",
+          "type": "power_outage",
+          "target_id": "dc_north",
+          "start_time": 50,
+          "duration": 10
+        }
+      ],
+      "interventions": []
+    },
+    {
+      "id": "outage-generator",
+      "name": "Power cut + 12 h backup generator",
+      "parent": "outage",
+      "events": [],
+      "interventions": [
+        {
+          "id": "generator",
+          "type": "set_attribute",
+          "params": {
+            "component_id": "dc_north",
+            "key": "backup_power_hours",
+            "value": 12
+          },
+          "cost": 1500,
+          "description": "Hire a generator"
+        }
+      ]
+    },
+    {
+      "id": "outage-lean",
+      "name": "Power cut + keep less stock at DC North",
+      "parent": "outage",
+      "events": [],
+      "interventions": [
+        {
+          "id": "lean_rp",
+          "type": "set_attribute",
+          "params": {
+            "component_id": "dc_north",
+            "key": "reorder_point",
+            "value": 120
+          },
+          "cost": 0
+        },
+        {
+          "id": "lean_qty",
+          "type": "set_attribute",
+          "params": {
+            "component_id": "dc_north",
+            "key": "order_quantity",
+            "value": 200
+          },
+          "cost": 0
+        }
+      ]
+    },
+    {
+      "id": "closure",
+      "name": "Highway closed: warehouse to DC North (36 h)",
+      "parent": "baseline",
+      "events": [
+        {
+          "id": "highway",
+          "type": "route_closure",
+          "target_id": "warehouse->dc_north",
+          "start_time": 30,
+          "duration": 36
+        }
+      ],
+      "interventions": []
+    },
+    {
+      "id": "closure-safety-stock",
+      "name": "Closure + more safety stock at DC North",
+      "parent": "closure",
+      "events": [],
+      "interventions": [
+        {
+          "id": "safety",
+          "type": "set_attribute",
+          "params": {
+            "component_id": "dc_north",
+            "key": "reorder_point",
+            "value": 420
+          },
+          "cost": 400
+        },
+        {
+          "id": "safety_qty",
+          "type": "set_attribute",
+          "params": {
+            "component_id": "dc_north",
+            "key": "order_quantity",
+            "value": 500
+          },
+          "cost": 0
+        }
+      ]
+    },
+    {
+      "id": "heatwave",
+      "name": "Heatwave: demand up, a reefer may fail",
+      "parent": "baseline",
+      "events": [
+        {
+          "id": "hot",
+          "type": "demand_spike",
+          "target_id": "store1",
+          "start_time": 72,
+          "duration": 48,
+          "severity": 1.5
+        },
+        {
+          "id": "hot3",
+          "type": "demand_spike",
+          "target_id": "store3",
+          "start_time": 72,
+          "duration": 48,
+          "severity": 1.5
+        },
+        {
+          "id": "reefer",
+          "type": "reefer_failure",
+          "target_id": "warehouse->dc_south",
+          "start_time": 80,
+          "duration": 10,
+          "probability": 0.4
+        },
+        {
+          "id": "late_supplier",
+          "type": "supplier_delay",
+          "target_id": "supplier",
+          "start_time": 60,
+          "duration": 48,
+          "severity": 2,
+          "probability": 0.5
+        }
+      ],
+      "interventions": []
+    }
+  ],
+  "objectives": {
+    "objectives": [
+      {
+        "metric": "fill_rate",
+        "weight": 3
+      },
+      {
+        "metric": "units_discarded",
+        "weight": 2
+      },
+      {
+        "metric": "total_cost",
+        "weight": 1
+      },
+      {
+        "metric": "on_time_rate",
+        "weight": 1
+      }
+    ],
+    "constraints": [
+      {
+        "metric": "fill_rate",
+        "op": ">=",
+        "value": 0.97
+      }
+    ]
+  }
+}

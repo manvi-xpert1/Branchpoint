@@ -1,21 +1,95 @@
 import { useState } from "react";
-import type { ComponentDef, DependencyDef, DependencyType, SystemAnalysis, SystemDef } from "../api/types";
-import { COMPONENT_KINDS, kindOf } from "../lib/catalog";
+import type { ComponentDef, DependencyDef, DomainSpec, FieldSpec, SystemAnalysis, SystemDef } from "../api/types";
+import { entityType, hasFeature } from "../lib/domains";
 import { Field, NumberInput } from "./common";
 
 const ID_PATTERN = /^[A-Za-z0-9_.-]+$/;
 
-const KNOWN_ATTRIBUTES: { key: string; label: string; hint: string }[] = [
-  { key: "capacity", label: "Capacity", hint: "Requests per second it can handle" },
-  { key: "current_load", label: "Current load", hint: "Normal requests per second" },
-  { key: "recovery_time", label: "Recovery time", hint: "Time units to recover after a failure with no set duration" },
-  { key: "overload_failure_ratio", label: "Overload failure ratio", hint: "Fails when load > capacity × this (default 1.5)" },
-];
+/** An input for one catalog field (attribute, relationship setting or system parameter). */
+export function FieldInput({ field, value, onChange }: {
+  field: FieldSpec; value: unknown; onChange: (v: unknown) => void;
+}) {
+  const unit = field.unit ? ` (${field.unit})` : "";
+  const placeholder = field.default !== null && field.default !== undefined ? `default ${String(field.default)}` : "not set";
+  if (field.kind === "boolean") {
+    const checked = value === undefined || value === null ? Boolean(field.default) : Boolean(value);
+    return (
+      <label className="check" title={field.help}>
+        <input type="checkbox" aria-label={field.label} checked={checked} onChange={(e) => onChange(e.target.checked)} />
+        <span>{field.label}{field.help && <span className="hint small muted" style={{ display: "block" }}>{field.help}</span>}</span>
+      </label>
+    );
+  }
+  if (field.kind === "choice") {
+    return (
+      <Field label={field.label} hint={field.help}>
+        <select aria-label={field.label} value={String(value ?? field.default ?? "")} onChange={(e) => onChange(e.target.value)}>
+          {field.choices.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </Field>
+    );
+  }
+  if (field.kind === "text") {
+    return (
+      <Field label={field.label} hint={field.help}>
+        <input aria-label={field.label} value={String(value ?? "")} onChange={(e) => onChange(e.target.value || null)} />
+      </Field>
+    );
+  }
+  const max = field.kind === "probability" ? 1 : field.max ?? undefined;
+  return (
+    <Field label={`${field.label}${unit}`} hint={field.help}>
+      <NumberInput aria-label={field.label} value={typeof value === "number" ? value : null}
+        min={field.min ?? undefined} step={field.kind === "integer" ? 1 : field.kind === "probability" ? 0.05 : "any"}
+        placeholder={placeholder}
+        onChange={(v) => {
+          if (v === null) return onChange(null);
+          let n = field.kind === "integer" ? Math.round(v) : v;
+          if (field.min !== null && n < field.min) n = field.min;
+          if (max !== undefined && n > max) n = max;
+          onChange(n);
+        }} />
+    </Field>
+  );
+}
+
+function setIn(obj: Record<string, unknown>, key: string, value: unknown): Record<string, unknown> {
+  const next = { ...obj };
+  if (value === null || value === undefined || value === "") delete next[key];
+  else next[key] = value;
+  return next;
+}
+
+function CustomAttributes({ attributes, known, onChange }: {
+  attributes: Record<string, unknown>; known: string[]; onChange: (a: Record<string, unknown>) => void;
+}) {
+  const [newKey, setNewKey] = useState("");
+  const extra = Object.keys(attributes).filter((k) => !known.includes(k));
+  return (
+    <>
+      {extra.map((k) => (
+        <div className="row" key={k} style={{ marginBottom: 8 }}>
+          <span className="mono small" style={{ flex: "0 0 110px", overflow: "hidden", textOverflow: "ellipsis" }}>{k}</span>
+          <input aria-label={`Custom attribute ${k}`} value={String(attributes[k] ?? "")}
+            onChange={(e) => onChange(setIn(attributes, k,
+              e.target.value === "" || isNaN(Number(e.target.value)) ? e.target.value : Number(e.target.value)))} />
+          <button className="ghost small fixed" onClick={() => onChange(setIn(attributes, k, null))} title="Remove">✕</button>
+        </div>
+      ))}
+      <div className="row">
+        <input placeholder="custom attribute" aria-label="New custom attribute" value={newKey} onChange={(e) => setNewKey(e.target.value)} />
+        <button className="small fixed" disabled={!newKey.trim() || newKey in attributes}
+          onClick={() => { onChange({ ...attributes, [newKey.trim()]: 0 }); setNewKey(""); }}>Add</button>
+      </div>
+    </>
+  );
+}
 
 // ---- component --------------------------------------------------------
 export function ComponentInspector({
-  component, allIds, blastRadius, onChange, onDelete,
+  spec, component, allIds, blastRadius, onChange, onDelete,
 }: {
+  spec: DomainSpec;
   component: ComponentDef;
   allIds: string[];
   blastRadius?: string[];
@@ -23,25 +97,18 @@ export function ComponentInspector({
   onDelete: () => void;
 }) {
   const [idText, setIdText] = useState(component.id);
-  const [newKey, setNewKey] = useState("");
   const idError = !ID_PATTERN.test(idText)
     ? "Letters, digits, _ . - only"
     : idText !== component.id && allIds.includes(idText) ? "Id already used" : null;
-
-  const setAttr = (key: string, value: unknown) => {
-    const attributes = { ...component.attributes };
-    if (value === null || value === undefined || value === "") delete attributes[key];
-    else attributes[key] = value;
-    onChange({ attributes });
-  };
-  const extraKeys = Object.keys(component.attributes).filter((k) => !KNOWN_ATTRIBUTES.some((a) => a.key === k));
-  const types = COMPONENT_KINDS.some((k) => k.type === component.type)
-    ? COMPONENT_KINDS : [...COMPONENT_KINDS, kindOf(component.type)];
+  const kind = entityType(spec, component.type);
+  const types = spec.entity_types.some((k) => k.type === component.type) ? spec.entity_types : [...spec.entity_types, kind];
+  const setAttr = (key: string, value: unknown) => onChange({ attributes: setIn(component.attributes, key, value) });
 
   return (
     <>
       <div className="section">
-        <h3>Component</h3>
+        <h3>{kind.label}</h3>
+        {kind.description && <p className="small muted" style={{ margin: "-4px 0 10px" }}>{kind.description}</p>}
         <Field label="Name">
           <input aria-label="Component name" value={component.name ?? ""} onChange={(e) => onChange({ name: e.target.value })} />
         </Field>
@@ -56,36 +123,24 @@ export function ComponentInspector({
             {types.map((k) => <option key={k.type} value={k.type}>{k.label}</option>)}
           </select>
         </Field>
-        <label className="check">
-          <input type="checkbox" checked={component.entry_point} onChange={(e) => onChange({ entry_point: e.target.checked })} />
-          <span>Entry point <span className="muted small">(availability is measured here)</span></span>
-        </label>
+        {hasFeature(spec, "entry_points") && (
+          <label className="check">
+            <input type="checkbox" checked={component.entry_point} onChange={(e) => onChange({ entry_point: e.target.checked })} />
+            <span>Entry point <span className="muted small">(availability is measured here)</span></span>
+          </label>
+        )}
       </div>
 
       <div className="section">
-        <h3>Attributes</h3>
-        {KNOWN_ATTRIBUTES.map((a) => (
-          <Field key={a.key} label={a.label} hint={a.hint}>
-            <NumberInput aria-label={a.label} value={component.attributes[a.key] as number | undefined}
-              min={0} onChange={(v) => setAttr(a.key, v)} placeholder="not set" />
-          </Field>
+        <h3>Settings</h3>
+        {kind.fields.map((f) => (
+          <FieldInput key={f.key} field={f} value={component.attributes[f.key]} onChange={(v) => setAttr(f.key, v)} />
         ))}
-        {extraKeys.map((k) => (
-          <div className="row" key={k} style={{ marginBottom: 8 }}>
-            <span className="mono small" style={{ flex: "0 0 110px", overflow: "hidden", textOverflow: "ellipsis" }}>{k}</span>
-            <input value={String(component.attributes[k] ?? "")}
-              onChange={(e) => setAttr(k, e.target.value === "" || isNaN(Number(e.target.value)) ? e.target.value : Number(e.target.value))} />
-            <button className="ghost small fixed" onClick={() => setAttr(k, null)} title="Remove">✕</button>
-          </div>
-        ))}
-        <div className="row">
-          <input placeholder="custom attribute" value={newKey} onChange={(e) => setNewKey(e.target.value)} />
-          <button className="small fixed" disabled={!newKey.trim() || newKey in component.attributes}
-            onClick={() => { setAttr(newKey.trim(), 0); setNewKey(""); }}>Add</button>
-        </div>
+        <CustomAttributes attributes={component.attributes} known={kind.fields.map((f) => f.key)}
+          onChange={(attributes) => onChange({ attributes })} />
       </div>
 
-      {blastRadius && (
+      {blastRadius && hasFeature(spec, "propagation_delay") && (
         <div className="section">
           <h3>Blast radius</h3>
           {blastRadius.length === 0 ? (
@@ -101,22 +156,17 @@ export function ComponentInspector({
       )}
 
       <div className="section">
-        <button className="danger" onClick={onDelete}>Delete component</button>
+        <button className="danger" onClick={onDelete}>Delete {kind.label.toLowerCase()}</button>
       </div>
     </>
   );
 }
 
-// ---- dependency -------------------------------------------------------
-const TYPE_HELP: Record<DependencyType, string> = {
-  requires: "Fails or degrades together with its dependency.",
-  optional: "Losing the dependency only degrades the dependent.",
-  fallback: "A backup: keeps the dependent running in degraded mode. Give it the same group as the primary.",
-};
-
+// ---- relationship -----------------------------------------------------
 export function DependencyInspector({
-  dependency, components, onChange, onDelete,
+  spec, dependency, components, onChange, onDelete,
 }: {
+  spec: DomainSpec;
   dependency: DependencyDef;
   components: ComponentDef[];
   onChange: (patch: Partial<DependencyDef>) => void;
@@ -124,34 +174,48 @@ export function DependencyInspector({
 }) {
   const name = (id: string) => components.find((c) => c.id === id)?.name ?? id;
   const autoId = dependency.id === `${dependency.source_id}->${dependency.target_id}`;
+  const rt = spec.relationship_types.find((r) => r.type === dependency.dependency_type);
+  const statusDomain = hasFeature(spec, "propagation_delay");
   const swap = () => onChange({
     source_id: dependency.target_id,
     target_id: dependency.source_id,
     id: autoId ? `${dependency.target_id}->${dependency.source_id}` : dependency.id,
   });
+  const attrs = dependency.attributes ?? {};
   return (
     <>
       <div className="section">
-        <h3>Dependency</h3>
+        <h3>{statusDomain ? "Dependency" : rt?.label ?? "Connection"}</h3>
         <p style={{ margin: "0 0 12px" }}>
-          <b>{name(dependency.source_id)}</b> depends on <b>{name(dependency.target_id)}</b>
+          {statusDomain
+            ? <><b>{name(dependency.source_id)}</b> depends on <b>{name(dependency.target_id)}</b></>
+            : <><b>{name(dependency.source_id)}</b> → <b>{name(dependency.target_id)}</b></>}
         </p>
-        <Field label="Type" hint={TYPE_HELP[dependency.dependency_type]}>
-          <select aria-label="Dependency type" value={dependency.dependency_type}
-            onChange={(e) => onChange({ dependency_type: e.target.value as DependencyType })}>
-            <option value="requires">requires</option>
-            <option value="optional">optional</option>
-            <option value="fallback">fallback</option>
-          </select>
-        </Field>
-        <Field label="Group" hint="Dependencies in the same group are interchangeable: one healthy member is enough (replicas, fallbacks).">
-          <input aria-label="Dependency group" value={dependency.group ?? ""} placeholder="none"
-            onChange={(e) => onChange({ group: e.target.value || null })} />
-        </Field>
-        <Field label="Propagation delay" hint="Time units before a change in the dependency reaches the dependent.">
-          <NumberInput aria-label="Propagation delay" value={dependency.propagation_delay} min={0}
-            onChange={(v) => onChange({ propagation_delay: v ?? 0 })} />
-        </Field>
+        {spec.relationship_types.length > 1 && (
+          <Field label="Type" hint={rt?.description}>
+            <select aria-label="Dependency type" value={dependency.dependency_type}
+              onChange={(e) => onChange({ dependency_type: e.target.value })}>
+              {spec.relationship_types.map((r) => <option key={r.type} value={r.type}>{r.label}</option>)}
+            </select>
+          </Field>
+        )}
+        {spec.relationship_types.length === 1 && rt?.description && <p className="small muted">{rt.description}</p>}
+        {hasFeature(spec, "groups") && (
+          <Field label="Group" hint="Dependencies in the same group are interchangeable: one healthy member is enough (replicas, fallbacks).">
+            <input aria-label="Dependency group" value={dependency.group ?? ""} placeholder="none"
+              onChange={(e) => onChange({ group: e.target.value || null })} />
+          </Field>
+        )}
+        {hasFeature(spec, "propagation_delay") && (
+          <Field label="Propagation delay" hint="Time units before a change in the dependency reaches the dependent.">
+            <NumberInput aria-label="Propagation delay" value={dependency.propagation_delay} min={0}
+              onChange={(v) => onChange({ propagation_delay: v ?? 0 })} />
+          </Field>
+        )}
+        {rt?.fields.map((f) => (
+          <FieldInput key={f.key} field={f} value={attrs[f.key]}
+            onChange={(v) => onChange({ attributes: setIn(attrs, f.key, v) })} />
+        ))}
         <div className="mono small muted">id: {dependency.id}</div>
       </div>
       <div className="section row" style={{ justifyContent: "flex-start" }}>
@@ -164,12 +228,14 @@ export function DependencyInspector({
 
 // ---- system -----------------------------------------------------------
 export function SystemInspector({
-  draft, analysis, onChange,
+  spec, draft, analysis, onChange,
 }: {
+  spec: DomainSpec;
   draft: SystemDef;
   analysis: SystemAnalysis | null;
   onChange: (patch: Partial<SystemDef>) => void;
 }) {
+  const params = draft.parameters ?? {};
   return (
     <>
       <div className="section">
@@ -182,28 +248,43 @@ export function SystemInspector({
             onChange={(e) => onChange({ description: e.target.value })} />
         </Field>
         <div className="small muted">
-          {draft.components.length} components · {draft.dependencies.length} dependencies · domain {draft.domain}
+          {draft.components.length} components · {draft.dependencies.length} connections · {spec.label}
         </div>
       </div>
+      {spec.parameters.length > 0 && (
+        <div className="section">
+          <h3>System parameters</h3>
+          {spec.parameters.map((f) => (
+            <FieldInput key={f.key} field={f} value={params[f.key]}
+              onChange={(v) => onChange({ parameters: setIn(params, f.key, v) })} />
+          ))}
+        </div>
+      )}
       <div className="section">
         <h3>Validation</h3>
         {!analysis && <span className="muted small">Checking…</span>}
         {analysis?.errors.map((e) => <div key={e} className="notice error">{e}</div>)}
         {analysis?.warnings.map((w) => <div key={w} className="notice warn">{w}</div>)}
         {analysis?.valid && analysis.warnings.length === 0 && <div className="notice ok">No problems found.</div>}
-        {analysis?.valid && analysis.entry_points.length > 0 && (
+        {analysis?.valid && hasFeature(spec, "entry_points") && analysis.entry_points.length > 0 && (
           <div className="small muted">Entry points: {analysis.entry_points.join(", ")}</div>
         )}
       </div>
       <div className="section small muted">
         <h3>How to edit</h3>
         <ul style={{ paddingLeft: 18, margin: 0, lineHeight: 1.6 }}>
-          <li>Add components from the toolbar.</li>
-          <li>Drag from a component's <b>bottom</b> handle to the component it <b>depends on</b>.</li>
-          <li>Click a component or arrow to edit it; press Delete to remove it.</li>
+          <li>Add {spec.entity_types.map((e) => e.label.toLowerCase()).slice(0, 3).join(", ")}… from the toolbar.</li>
+          <li>Drag from a box's <b>bottom</b> handle to another box to connect them. {spec.edge_meaning}</li>
+          <li>Click a box or arrow to edit it; press Delete to remove it.</li>
           <li>Save when done. Scenarios always use the saved version.</li>
         </ul>
       </div>
+      <details className="section small">
+        <summary><b>Model assumptions</b></summary>
+        <ul style={{ paddingLeft: 18, margin: "8px 0 0", lineHeight: 1.55 }} className="muted">
+          {spec.assumptions.map((a) => <li key={a}>{a}</li>)}
+        </ul>
+      </details>
     </>
   );
 }

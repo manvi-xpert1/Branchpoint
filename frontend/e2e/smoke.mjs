@@ -22,14 +22,38 @@ const consoleErrors = [];
 page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text()));
 page.on("pageerror", (e) => consoleErrors.push(String(e)));
 page.on("dialog", (d) => d.accept());
+// The web font comes from Google Fonts. Answer those requests locally so the
+// test works offline; the app falls back to system fonts.
+await page.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.fulfill({ status: 200, contentType: "text/css", body: "" }));
 
 const step = (name) => console.log(`- ${name}`);
 const shot = (name) => page.screenshot({ path: `${SHOTS}/${name}.png` });
 
 try {
-  step("projects: load the example");
+  step("landing: open the software example on its futures dashboard");
   await page.goto(BASE);
-  await page.getByRole("button", { name: "Load example" }).first().click();
+  await page.getByRole("heading", { name: /Explore alternative futures/ }).waitFor();
+  await shot("0-landing");
+  await page.getByTestId("example-software_infrastructure").click();
+  await page.waitForURL(/\/futures/);
+  await page.getByTestId("future-1").waitFor();
+  // The DB-failure decisions are ranked with the default objectives (downtime x3, degraded x1, cost x1).
+  assert.equal(await page.locator(".future").count(), 4);
+  await page.locator(".card.recommendation", { hasText: "fast restore" }).waitFor();
+  await shot("0b-futures");
+
+  step("futures: weighting downtime more makes the replica the best future");
+  await page.getByLabel("Weight of Downtime").fill("5");
+  await page.locator(".card.recommendation", { hasText: "read replica" }).waitFor();
+  await page.getByText(/is dominated by|are dominated by/).first().waitFor();
+  // Sensitivity of the plain DB failure: Postgres's recovery time decides the downtime.
+  await page.getByLabel("Future to analyse").selectOption({ label: "#4 DB fails, no intervention" });
+  await page.getByRole("button", { name: "Analyse" }).click();
+  await page.getByLabel("Sensitivity chart").waitFor();
+  await page.locator("#sensitivity").getByText(/Baseline downtime/).waitFor();
+
+  step("designer: open the e-commerce system");
+  await page.getByRole("link", { name: "Design" }).click();
   await page.waitForURL(/\/design$/);
   await page.getByTestId("node-postgres").waitFor();
   assert.equal(await page.locator(".react-flow__node").count(), 4);
@@ -44,7 +68,7 @@ try {
   const handle = page.locator('.react-flow__node[data-id="api_gateway"] .react-flow__handle.source');
   await handle.dragTo(page.locator('.react-flow__node[data-id="queue"]'));
   await page.locator('.react-flow__edge[data-id="api_gateway->queue"]').waitFor();
-  await page.getByText("depends on").waitFor(); // dependency inspector opened
+  await page.getByText("API Gateway depends on Order Queue").waitFor(); // dependency inspector opened
   await page.getByLabel("Dependency type").selectOption("optional");
 
   step("designer: blast radius when selecting the database");
@@ -94,12 +118,13 @@ try {
   await page.getByLabel("Number of runs").fill("1000");
   await page.getByRole("button", { name: "Run 1000 times" }).click();
   await page.getByText(/model estimates/).waitFor();
-  await page.locator('[aria-label="Downtime histogram"] .recharts-bar-rectangle').first().waitFor();
+  await page.locator('[aria-label="Risk histogram"] .recharts-bar-rectangle').first().waitFor();
   // db_outage (p=0.3) -> 10, users_crash (p=0.2) -> 4: four possible outcomes.
-  assert.equal(await page.locator('[aria-label="Downtime histogram"] .recharts-bar-rectangle').count(), 4);
+  assert.equal(await page.locator('[aria-label="Risk histogram"] .recharts-bar-rectangle').count(), 4);
   const p95 = page.locator(".metric", { hasText: "Bad case (p95)" }).locator(".value");
   assert.match(await p95.innerText(), /^(10|14)$/);
-  await page.getByLabel("Downtime histogram").scrollIntoViewIfNeeded();
+  await page.getByRole("table", { name: "Risk drivers" }).getByText(/db_outage/).waitFor();
+  await page.getByLabel("Risk histogram").scrollIntoViewIfNeeded();
   await shot("3c-monte-carlo");
 
   step("compare: run every scenario");
@@ -109,13 +134,13 @@ try {
   await page.getByRole("table", { name: "Comparison" }).waitFor();
   const rows = page.getByRole("table", { name: "Comparison" }).locator("tbody tr");
   assert.equal(await rows.count(), 8);
-  await page.getByRole("columnheader", { name: "p95 downtime" }).waitFor();
+  await page.getByRole("columnheader", { name: "Bad case" }).waitFor();
   await page.getByRole("button", { name: /Run & compare/ }).and(page.locator(":enabled")).waitFor({ timeout: 30000 });
   const noIntervention = rows.filter({ hasText: "DB fails, no intervention" });
   assert.match(await noIntervention.locator("td").nth(2).innerText(), /^10$/);
   await page.locator(".recharts-bar-rectangle path").first().waitFor();
   await page.waitForTimeout(1500); // let the chart animation finish
-  await page.getByRole("heading", { name: "Time unavailable vs degraded" }).scrollIntoViewIfNeeded();
+  await page.getByRole("heading", { name: "Downtime by scenario" }).scrollIntoViewIfNeeded();
   await shot("4-compare");
 
   step("playback: gateway failure explained back to the root event");
@@ -143,10 +168,45 @@ try {
   await page.getByRole("button", { name: "Verify replay" }).click();
   await page.getByText(/Replay identical/).waitFor();
 
-  step("projects: list shows the system");
-  await page.getByRole("link", { name: "Branchpoint" }).click();
-  await page.getByText("5 components").waitFor();
+  step("systems: list shows the system");
+  await page.getByRole("link", { name: "All systems" }).click();
+  await page.getByRole("heading", { name: "Your systems" }).waitFor();
+  await page.getByText("5 parts").waitFor();
   await shot("6-projects");
+
+  step("hospital: the surge decisions are simulated and ranked");
+  await page.getByTestId("load-hospital").click();
+  await page.waitForURL(/\/futures/);
+  await page.getByTestId("future-1").waitFor();
+  assert.equal(await page.locator(".future").count(), 6); // the surge and its 5 branches
+  await page.locator(".card.recommendation", { hasText: "extra ED bays" }).waitFor();
+  await page.getByLabel("Runs per future").selectOption("50");
+  await page.getByRole("button", { name: /Simulate 300 runs/ }).click();
+  await page.getByRole("table", { name: "Risk of every future" }).waitFor({ timeout: 60000 });
+  await shot("7-hospital-futures");
+
+  step("hospital: playback shows queues over time");
+  await page.locator(".future").first().getByRole("button", { name: /Playback/ }).click();
+  await page.waitForURL(/\/runs\//);
+  await page.getByTestId("node-ed").waitFor();
+  await page.getByRole("button", { name: "Charts over time" }).click();
+  await page.getByLabel("Time series").selectOption("queue");
+  await page.locator(".recharts-line").first().waitFor();
+  await shot("8-hospital-charts");
+
+  step("cold chain: a road closure reroutes stock and is explained");
+  await page.getByRole("link", { name: "All systems" }).click();
+  await page.getByTestId("load-cold_chain").click();
+  await page.waitForURL(/\/futures/);
+  await page.getByTestId("future-1").waitFor();
+  await page.getByRole("link", { name: "Scenarios" }).click();
+  await page.getByRole("link", { name: "Highway closed: warehouse to DC North (36 h)" }).click();
+  await page.getByRole("button", { name: /Run simulation/ }).click();
+  await page.waitForURL(/\/runs\//);
+  await page.locator(".log-item", { hasText: "instead of" }).first().click();
+  await page.getByText("Why did this happen?").waitFor();
+  await page.locator(".chain-step", { hasText: "route closure begins" }).waitFor();
+  await shot("9-coldchain-explain");
 
   assert.deepEqual(consoleErrors, [], "no browser console errors");
   console.log("\nE2E smoke test passed.");

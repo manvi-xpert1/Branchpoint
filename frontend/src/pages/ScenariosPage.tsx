@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import type { EventDef, InterventionDef, RunSummary, ScenarioIn, ScenarioOut } from "../api/types";
-import { ErrorNotice, errorMessage, Field, fmt, NumberInput, pct } from "../components/common";
+import { ErrorNotice, errorMessage, Field, NumberInput } from "../components/common";
 import { depId } from "../components/graph";
 import {
   defaultParams, EventEditor, InterventionEditor, summarizeEvent, summarizeIntervention,
@@ -10,6 +10,7 @@ import {
 import { MonteCarloPanel } from "../components/MonteCarloPanel";
 import { useToast } from "../components/Toast";
 import { uniqueId } from "../lib/catalog";
+import { eventTargets, formatMetric, hasFeature, metricDef } from "../lib/domains";
 import { componentIdsAfter, fallbackPreset, replicaPreset } from "../lib/presets";
 import { toDef, useWorkspace } from "./workspace";
 
@@ -89,7 +90,7 @@ export default function ScenariosPage() {
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
               </Link>
             ))}
-            {tree.length === 0 && <p className="muted small">No scenarios yet. Create one to inject failures.</p>}
+            {tree.length === 0 && <p className="muted small">No scenarios yet. Create one to explore a future.</p>}
           </div>
         </div>
         <div className="section small muted">
@@ -102,7 +103,7 @@ export default function ScenariosPage() {
         {ws.dirty && (
           <div className="notice warn">
             The design has unsaved changes. Scenarios run against the <b>saved</b> system.{" "}
-            <Link to="../design">Go to Design</Link>
+            <Link to={`/systems/${ws.system.id}/design`}>Go to Design</Link>
           </div>
         )}
         {selected ? (
@@ -112,8 +113,8 @@ export default function ScenariosPage() {
           tree.length === 0 && (
             <div className="card empty">
               <h2 style={{ color: "var(--text)", marginBottom: 8 }}>No scenarios</h2>
-              <p>A scenario is an experiment: a set of events (such as a database failure) and optional
-                interventions (such as adding a replica).</p>
+              <p>A scenario is one possible future: a set of events (what happens to the system) and
+                decisions (what you change before it happens).</p>
               <button className="primary" onClick={() => create(null)}>Create scenario</button>
             </div>
           )
@@ -133,9 +134,13 @@ function ScenarioEditor({ scenario, onBranch, onDelete }: {
   const [draft, setDraft] = useState<ScenarioIn>(() => toInput(scenario));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"save" | "run" | null>(null);
-  const [until, setUntil] = useState(30);
+  const spec = ws.spec;
+  const [until, setUntil] = useState(spec.default_until);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const dirty = JSON.stringify(draft) !== JSON.stringify(toInput(scenario));
+  // The first objectives of the domain are the most telling columns for past runs.
+  const summaryMetrics = (spec.default_objectives.length ? spec.default_objectives.map(([k]) => k) : spec.metrics.map((m) => m.key))
+    .slice(0, 3).map((k) => metricDef(spec, k));
 
   useEffect(() => { api.listRuns(scenario.id).then(setRuns).catch(() => {}); }, [scenario.id]);
 
@@ -151,17 +156,22 @@ function ScenarioEditor({ scenario, onBranch, onDelete }: {
   const takenIvIds = allInterventions.map((i) => i.id);
 
   const addEvent = () => {
-    const target = targets.find((t) => system.components.find((c) => c.id === t)?.type === "database") ?? targets[0] ?? "";
+    // Start with the domain's first event type that targets a component with a sensible target.
+    const et = spec.event_types.find((e) => e.target === "entity" && e.type !== "component_recovery") ?? spec.event_types[0];
+    const options = eventTargets(spec, et.type, system, targets);
+    const preferred = options.find((t) => ["database", "emergency", "distribution"].includes(
+      system.components.find((c) => c.id === t)?.type ?? "")) ?? options[0] ?? "";
     const ev: EventDef = {
-      id: uniqueId(`fail_${target}`, takenEventIds), type: "component_failure", target_id: target,
-      start_time: 5, duration: null, severity: 1, probability: 1,
+      id: uniqueId(`${et.type}_${preferred}`.slice(0, 40), takenEventIds), type: et.type, target_id: preferred,
+      start_time: Math.round(spec.default_until / 6), duration: et.uses_duration ? Math.round(spec.default_until / 6) : null,
+      severity: et.severity_label ? 2 : 1, probability: 1,
     };
     set({ events: [...draft.events, ev] });
   };
 
   const addIntervention = (type: InterventionDef["type"] = "set_attribute") =>
     set({ interventions: [...draft.interventions, {
-      id: uniqueId(type, takenIvIds), type, params: defaultParams(type, system), cost: 0, description: "",
+      id: uniqueId(type, takenIvIds), type, params: defaultParams(type, system, spec), cost: 0, description: "",
     }] });
 
   const save = async (): Promise<boolean> => {
@@ -238,7 +248,7 @@ function ScenarioEditor({ scenario, onBranch, onDelete }: {
           const overridden = draft.events.some((o) => o.id === e.id);
           return (
             <div key={e.id} className={`editable-row inherited ${removed || overridden ? "removed" : ""} row`}>
-              <span><span className="pill">inherited</span> {summarizeEvent(e)}</span>
+              <span><span className="pill">inherited</span> {summarizeEvent(spec, e)}</span>
               {!overridden && (
                 <button className="small fixed" onClick={() => toggleRemoved(e.id)}>
                   {removed ? "Restore" : "Remove in this branch"}
@@ -248,7 +258,7 @@ function ScenarioEditor({ scenario, onBranch, onDelete }: {
           );
         })}
         {draft.events.map((e, i) => (
-          <EventEditor key={i} event={e} targets={targets}
+          <EventEditor key={i} spec={spec} event={e} system={system} componentIds={targets}
             onChange={(ev) => set({ events: draft.events.map((x, j) => (j === i ? ev : x)) })}
             onRemove={() => set({ events: draft.events.filter((_, j) => j !== i) })} />
         ))}
@@ -259,11 +269,13 @@ function ScenarioEditor({ scenario, onBranch, onDelete }: {
 
       <div className="card">
         <div className="row" style={{ marginBottom: 12 }}>
-          <h2>Interventions</h2>
+          <h2>Decisions <span className="muted small" style={{ fontWeight: 400 }}>(interventions)</span></h2>
           <button className="small fixed" onClick={() => addIntervention()}>Add custom</button>
         </div>
-        <Presets system={system} existing={allInterventions}
-          onAdd={(ivs) => { set({ interventions: [...draft.interventions, ...ivs] }); toast(`Added ${ivs.length} intervention step(s)`); }} />
+        {hasFeature(spec, "presets") && (
+          <Presets system={system} existing={allInterventions}
+            onAdd={(ivs) => { set({ interventions: [...draft.interventions, ...ivs] }); toast(`Added ${ivs.length} intervention step(s)`); }} />
+        )}
         {inheritedInterventions.map((iv) => (
           <div key={iv.id} className="editable-row inherited">
             <span className="pill">inherited</span> {summarizeIntervention(iv)}
@@ -271,19 +283,22 @@ function ScenarioEditor({ scenario, onBranch, onDelete }: {
           </div>
         ))}
         {draft.interventions.map((iv, i) => (
-          <InterventionEditor key={i} iv={iv} system={system} componentIds={targets}
+          <InterventionEditor key={i} spec={spec} iv={iv} system={system} componentIds={targets}
             onChange={(n) => set({ interventions: draft.interventions.map((x, j) => (j === i ? n : x)) })}
             onRemove={() => set({ interventions: draft.interventions.filter((_, j) => j !== i) })} />
         ))}
       </div>
 
       <div className="card">
-        <h2 style={{ marginBottom: 12 }}>Run</h2>
+        <div className="row" style={{ marginBottom: 12 }}>
+          <h2>Run</h2>
+          <Link className="btn small fixed" to={`/systems/${ws.system.id}/futures`}>Compare futures →</Link>
+        </div>
         <div className="row" style={{ justifyContent: "flex-start" }}>
           <label className="row fixed" style={{ gap: 6 }}>
             <span className="small muted">Simulate for</span>
             <span style={{ width: 90 }}><NumberInput aria-label="Simulation duration" value={until} min={1} onChange={(v) => setUntil(v && v > 0 ? v : 30)} /></span>
-            <span className="small muted">time units</span>
+            <span className="small muted">{spec.time_unit}</span>
           </label>
           <button className="primary fixed" onClick={run} disabled={busy !== null}>
             {busy === "run" ? <span className="spinner" /> : "▶"} {dirty ? "Save & run" : "Run simulation"}
@@ -291,14 +306,12 @@ function ScenarioEditor({ scenario, onBranch, onDelete }: {
         </div>
         {runs.length > 0 && (
           <table style={{ marginTop: 14 }}>
-            <thead><tr><th>Run</th><th className="num">Availability</th><th className="num">Downtime</th><th className="num">Affected</th><th /></tr></thead>
+            <thead><tr><th>Run</th>{summaryMetrics.map((m) => <th key={m.key} className="num">{m.label}</th>)}<th /></tr></thead>
             <tbody>
               {runs.slice(0, 5).map((r) => (
                 <tr key={r.id}>
-                  <td className="small">{new Date(r.created_at).toLocaleString()} <span className="muted">· {r.until}t · seed {r.seed}</span></td>
-                  <td className="num">{pct(r.metrics.availability)}</td>
-                  <td className="num">{fmt(r.metrics.downtime)}</td>
-                  <td className="num">{r.metrics.affected_components}</td>
+                  <td className="small">{new Date(r.created_at).toLocaleString()} <span className="muted">· {r.until} {spec.time_unit} · seed {r.seed}</span></td>
+                  {summaryMetrics.map((m) => <td key={m.key} className="num">{formatMetric(m, r.metrics[m.key])}</td>)}
                   <td className="num"><Link to={`/systems/${ws.system.id}/runs/${r.id}`}>View</Link></td>
                 </tr>
               ))}
@@ -307,7 +320,7 @@ function ScenarioEditor({ scenario, onBranch, onDelete }: {
         )}
       </div>
 
-      <MonteCarloPanel scenarioId={scenario.id} until={until}
+      <MonteCarloPanel spec={spec} scenarioId={scenario.id} until={until}
         events={[...inheritedEvents.filter((e) => !draft.remove_events.includes(e.id)
           && !draft.events.some((o) => o.id === e.id)), ...draft.events]}
         beforeRun={async () => !dirty || save()} />

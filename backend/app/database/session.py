@@ -18,8 +18,16 @@ from sqlalchemy.pool import StaticPool
 DEFAULT_URL = "sqlite:///./branchpoint.db"
 
 
+def normalize_url(url: str) -> str:
+    """Hosting services hand out ``postgres://...`` URLs; SQLAlchemy needs the psycopg 3 driver named."""
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
+
+
 def make_engine(url: str | None = None) -> Engine:
-    url = url or os.environ.get("DATABASE_URL", DEFAULT_URL)
+    url = normalize_url(url or os.environ.get("DATABASE_URL", DEFAULT_URL))
     if url.startswith("sqlite"):
         kwargs: dict = {"connect_args": {"check_same_thread": False}}
         if url in ("sqlite://", "sqlite:///:memory:"):
@@ -40,14 +48,17 @@ class Database:
         self.SessionLocal = sessionmaker(bind=self.engine, expire_on_commit=False)
 
     def create_tables(self) -> None:
-        from .tables import Base
+        """Create or upgrade the schema by running the Alembic migrations."""
+        from .migrate import migrate
 
-        Base.metadata.create_all(self.engine)
+        migrate(self.engine)
 
     def drop_tables(self) -> None:
         from .tables import Base
 
         Base.metadata.drop_all(self.engine)
+        with self.engine.begin() as conn:  # so the next create_tables starts from scratch
+            conn.exec_driver_sql("DROP TABLE IF EXISTS alembic_version")
 
     def session(self) -> Iterator[Session]:
         db = self.SessionLocal()

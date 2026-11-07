@@ -1,47 +1,61 @@
 import { useState } from "react";
-import type {
-  DependencyType, EventDef, EventType, InterventionDef, InterventionType, SystemDef,
-} from "../api/types";
-import { COMPONENT_KINDS, EVENT_LABELS } from "../lib/catalog";
+import type { DomainSpec, EventDef, InterventionDef, InterventionType, SystemDef } from "../api/types";
+import { defaultAttributes, entityType, eventTargets, eventType, hasFeature } from "../lib/domains";
 import { Field, NumberInput } from "./common";
 import { depId } from "./graph";
 
 // ---- events -----------------------------------------------------------
 export function EventEditor({
-  event, targets, onChange, onRemove,
+  spec, event, system, componentIds, onChange, onRemove,
 }: {
+  spec: DomainSpec;
   event: EventDef;
-  targets: string[];
+  system: SystemDef;
+  /** Component ids that exist after the scenario's interventions. */
+  componentIds: string[];
   onChange: (e: EventDef) => void;
   onRemove: () => void;
 }) {
   const set = (patch: Partial<EventDef>) => onChange({ ...event, ...patch });
-  const isRecovery = event.type === "component_recovery";
+  const et = eventType(spec, event.type);
+  const targets = eventTargets(spec, event.type, system, componentIds);
+  const changeType = (type: string) => {
+    const next = eventType(spec, type);
+    const nextTargets = eventTargets(spec, type, system, componentIds);
+    set({
+      type,
+      target_id: nextTargets.includes(event.target_id) ? event.target_id : nextTargets[0] ?? "",
+      severity: next?.severity_label ? (event.severity !== 1 ? event.severity : 2) : 1,
+      duration: next?.uses_duration === false ? null : event.duration,
+    });
+  };
   return (
     <div className="editable-row" data-testid={`event-${event.id}`}>
       <div className="row" style={{ marginBottom: 8 }}>
-        <select aria-label="Event type" value={event.type} onChange={(e) => set({ type: e.target.value as EventType })}>
-          {Object.entries(EVENT_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        <select aria-label="Event type" value={event.type} onChange={(e) => changeType(e.target.value)}>
+          {!et && <option value={event.type}>{event.type}</option>}
+          {spec.event_types.map((t) => <option key={t.type} value={t.type}>{t.label}</option>)}
         </select>
         <select aria-label="Event target" value={event.target_id} onChange={(e) => set({ target_id: e.target.value })}>
-          {!targets.includes(event.target_id) && <option value={event.target_id}>{event.target_id} (missing)</option>}
-          {targets.map((t) => <option key={t} value={t}>{t}</option>)}
+          {!targets.includes(event.target_id) && <option value={event.target_id}>{event.target_id || "choose…"} (missing)</option>}
+          {targets.map((t) => <option key={t} value={t}>{targetName(system, t)}</option>)}
         </select>
         <button className="ghost small fixed" onClick={onRemove} title="Remove event">✕</button>
       </div>
+      {et?.description && <div className="small muted" style={{ margin: "-2px 0 8px" }}>{et.description}</div>}
       <div className="grid3">
-        <Field label="Start time">
+        <Field label={`Start (${spec.time_unit})`}>
           <NumberInput aria-label="Start time" value={event.start_time} min={0} onChange={(v) => set({ start_time: v ?? 0 })} />
         </Field>
-        {!isRecovery && (
+        {et?.uses_duration !== false && (
           <Field label="Duration">
             <NumberInput aria-label="Duration" value={event.duration} min={0} placeholder="until fixed"
               onChange={(v) => set({ duration: v && v > 0 ? v : null })} />
           </Field>
         )}
-        {event.type === "traffic_spike" && (
-          <Field label="Load ×">
-            <NumberInput aria-label="Load multiplier" value={event.severity} min={0} onChange={(v) => set({ severity: v ?? 1 })} />
+        {et?.severity_label && (
+          <Field label={et.severity_label}>
+            <NumberInput aria-label={et.severity_label} value={event.severity} min={0} onChange={(v) => set({ severity: v ?? 1 })} />
           </Field>
         )}
         <Field label="Probability">
@@ -54,30 +68,76 @@ export function EventEditor({
   );
 }
 
-// ---- interventions ----------------------------------------------------
-const IV_LABELS: Record<InterventionType, string> = {
-  add_component: "Add component",
-  remove_component: "Remove component",
-  add_dependency: "Add dependency",
-  remove_dependency: "Remove dependency",
-  set_attribute: "Set attribute",
-};
+function targetName(system: SystemDef, id: string): string {
+  const c = system.components.find((x) => x.id === id);
+  if (c) return c.name && c.name !== c.id ? `${c.name} (${c.id})` : c.id;
+  const d = system.dependencies.find((x) => depId(x) === id);
+  if (d) {
+    const n = (cid: string) => system.components.find((x) => x.id === cid)?.name ?? cid;
+    return `${n(d.source_id)} → ${n(d.target_id)}`;
+  }
+  return id;
+}
 
-export function defaultParams(type: InterventionType, system: SystemDef): Record<string, unknown> {
-  const first = system.components[0]?.id ?? "";
+// ---- interventions ----------------------------------------------------
+/** Typed value from a text box: numbers become numbers, everything else stays text. */
+function parseValue(v: string): string | number {
+  return v !== "" && !isNaN(Number(v)) ? Number(v) : v;
+}
+
+export function defaultParams(type: InterventionType, system: SystemDef, spec: DomainSpec): Record<string, unknown> {
+  const firstComp = system.components[0];
+  const first = firstComp?.id ?? "";
+  const firstDep = system.dependencies[0];
+  const rel = spec.relationship_types[0];
   switch (type) {
-    case "add_component": return { id: "new_component", name: "New component", type: "service", attributes: {} };
+    case "add_component": {
+      const kind = spec.entity_types[1] ?? spec.entity_types[0];
+      return { id: `new_${kind?.type ?? "component"}`, name: `New ${kind?.label.toLowerCase() ?? "component"}`,
+        type: kind?.type ?? "service", attributes: defaultAttributes(kind?.fields ?? []) };
+    }
     case "remove_component": return { id: first };
     case "add_dependency": return { source_id: first, target_id: system.components[1]?.id ?? first,
-      dependency_type: "requires", group: null, propagation_delay: 0 };
-    case "remove_dependency": return { id: system.dependencies[0] ? depId(system.dependencies[0]) : "" };
-    case "set_attribute": return { component_id: first, key: "capacity", value: 1000 };
+      dependency_type: rel?.type ?? "requires", group: null, propagation_delay: 0,
+      attributes: defaultAttributes(rel?.fields ?? []) };
+    case "remove_dependency": return { id: firstDep ? depId(firstDep) : "" };
+    case "set_attribute": {
+      const field = firstComp ? entityType(spec, firstComp.type).fields.find((f) => f.kind !== "boolean") : undefined;
+      const current = field && firstComp ? firstComp.attributes[field.key] : undefined;
+      return { component_id: first, key: field?.key ?? "", value: typeof current === "number" ? current : field?.default ?? "" };
+    }
+    case "set_dependency_attribute": {
+      const field = rel?.fields[0];
+      return { dependency_id: firstDep ? depId(firstDep) : "", key: field?.key ?? "", value: field?.default ?? "" };
+    }
+    case "set_parameter": {
+      const field = spec.parameters[0];
+      return { key: field?.key ?? Object.keys(system.parameters ?? {})[0] ?? "", value: field?.default ?? "" };
+    }
   }
 }
 
+/** A key picker: the catalog's fields as options, plus free text for custom keys. */
+function KeyPicker({ label, value, fields, onChange }: {
+  label: string; value: string; fields: { key: string; label: string; unit: string }[]; onChange: (k: string) => void;
+}) {
+  const known = fields.some((f) => f.key === value);
+  return (
+    <Field label={label}>
+      <select aria-label={label} value={known ? value : "__custom"} onChange={(e) => e.target.value !== "__custom" && onChange(e.target.value)}>
+        {fields.map((f) => <option key={f.key} value={f.key}>{f.label}{f.unit ? ` (${f.unit})` : ""}</option>)}
+        <option value="__custom">{known || !value ? "Other…" : `Other: ${value}`}</option>
+      </select>
+      {!known && <input aria-label={`${label} name`} className="mono" style={{ marginTop: 4 }} value={value}
+        placeholder="attribute name" onChange={(e) => onChange(e.target.value)} />}
+    </Field>
+  );
+}
+
 export function InterventionEditor({
-  iv, system, componentIds, onChange, onRemove,
+  spec, iv, system, componentIds, onChange, onRemove,
 }: {
+  spec: DomainSpec;
   iv: InterventionDef;
   system: SystemDef;
   componentIds: string[];
@@ -101,9 +161,9 @@ export function InterventionEditor({
         <select aria-label="Intervention type" value={iv.type}
           onChange={(e) => {
             const type = e.target.value as InterventionType;
-            onChange({ ...iv, type, params: defaultParams(type, system) });
+            onChange({ ...iv, type, params: defaultParams(type, system, spec) });
           }}>
-          {Object.entries(IV_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          {spec.intervention_types.map((t) => <option key={t.type} value={t.type}>{t.label}</option>)}
         </select>
         <button className="ghost small fixed" onClick={onRemove} title="Remove intervention">✕</button>
       </div>
@@ -113,8 +173,9 @@ export function InterventionEditor({
           <div className="grid2">
             <Field label="Id"><input className="mono" value={p.id ?? ""} onChange={(e) => setP({ id: e.target.value })} /></Field>
             <Field label="Type">
-              <select value={p.type ?? "service"} onChange={(e) => setP({ type: e.target.value })}>
-                {COMPONENT_KINDS.map((k) => <option key={k.type} value={k.type}>{k.label}</option>)}
+              <select value={p.type ?? ""} onChange={(e) => setP({
+                type: e.target.value, attributes: defaultAttributes(entityType(spec, e.target.value).fields) })}>
+                {spec.entity_types.map((k) => <option key={k.type} value={k.type}>{k.label}</option>)}
               </select>
             </Field>
           </div>
@@ -126,20 +187,25 @@ export function InterventionEditor({
       {iv.type === "add_dependency" && (
         <>
           <div className="grid2">
-            {compSelect("Dependent (source)", "source_id")}
-            {compSelect("Depends on (target)", "target_id")}
+            {compSelect(hasFeature(spec, "groups") ? "Dependent (source)" : "From", "source_id")}
+            {compSelect(hasFeature(spec, "groups") ? "Depends on (target)" : "To", "target_id")}
             <Field label="Type">
-              <select value={p.dependency_type ?? "requires"} onChange={(e) => setP({ dependency_type: e.target.value as DependencyType })}>
-                <option>requires</option><option>optional</option><option>fallback</option>
+              <select value={p.dependency_type ?? ""} onChange={(e) => setP({ dependency_type: e.target.value })}>
+                {spec.relationship_types.map((r) => <option key={r.type} value={r.type}>{r.label}</option>)}
               </select>
             </Field>
-            <Field label="Group">
-              <input value={p.group ?? ""} placeholder="none" onChange={(e) => setP({ group: e.target.value || null })} />
-            </Field>
+            {hasFeature(spec, "groups") && (
+              <Field label="Group">
+                <input value={p.group ?? ""} placeholder="none" onChange={(e) => setP({ group: e.target.value || null })} />
+              </Field>
+            )}
           </div>
-          <Field label="Propagation delay">
-            <NumberInput value={p.propagation_delay ?? 0} min={0} onChange={(v) => setP({ propagation_delay: v ?? 0 })} />
-          </Field>
+          {hasFeature(spec, "propagation_delay") && (
+            <Field label="Propagation delay">
+              <NumberInput value={p.propagation_delay ?? 0} min={0} onChange={(v) => setP({ propagation_delay: v ?? 0 })} />
+            </Field>
+          )}
+          <JsonField label="Settings" value={p.attributes ?? {}} onChange={(attributes) => setP({ attributes })} />
         </>
       )}
       {iv.type === "remove_dependency" && (
@@ -153,13 +219,36 @@ export function InterventionEditor({
       {iv.type === "set_attribute" && (
         <div className="grid3">
           {compSelect("Component", "component_id")}
-          <Field label="Attribute"><input value={p.key ?? ""} onChange={(e) => setP({ key: e.target.value })} /></Field>
+          <KeyPicker label="Attribute" value={p.key ?? ""} onChange={(key) => setP({ key })}
+            fields={entityType(spec, system.components.find((c) => c.id === p.component_id)?.type ?? "").fields
+              .filter((f) => f.kind !== "boolean")} />
           <Field label="Value">
             <input value={p.value ?? ""} onChange={(e) => {
               const v = e.target.value;
               setP({ value: v !== "" && !isNaN(Number(v)) ? Number(v) : v });
             }} />
           </Field>
+        </div>
+      )}
+      {iv.type === "set_dependency_attribute" && (
+        <div className="grid3">
+          <Field label="Dependency">
+            <select aria-label="Dependency to change" value={p.dependency_id ?? ""} onChange={(e) => setP({ dependency_id: e.target.value })}>
+              {!system.dependencies.some((d) => depId(d) === p.dependency_id) && <option value={p.dependency_id ?? ""}>{p.dependency_id || "choose…"}</option>}
+              {system.dependencies.map((d) => <option key={depId(d)} value={depId(d)}>{depId(d)}</option>)}
+            </select>
+          </Field>
+          <KeyPicker label="Attribute" value={p.key ?? ""} onChange={(key) => setP({ key })}
+            fields={(spec.relationship_types.find((r) => r.type === system.dependencies.find((d) => depId(d) === p.dependency_id)?.dependency_type)?.fields ?? [])
+              .filter((f) => f.kind !== "boolean")} />
+          <Field label="Value"><input value={p.value ?? ""} onChange={(e) => setP({ value: parseValue(e.target.value) })} /></Field>
+        </div>
+      )}
+      {iv.type === "set_parameter" && (
+        <div className="grid2">
+          <KeyPicker label="Parameter" value={p.key ?? ""} onChange={(key) => setP({ key })}
+            fields={spec.parameters} />
+          <Field label="Value"><input aria-label="Parameter value" value={p.value ?? ""} onChange={(e) => setP({ value: parseValue(e.target.value) })} /></Field>
         </div>
       )}
 
@@ -206,13 +295,16 @@ export function summarizeIntervention(iv: InterventionDef): string {
     case "add_dependency": return `${p.source_id} → ${p.target_id} (${p.dependency_type ?? "requires"})`;
     case "remove_dependency": return `Remove dependency ${p.id}`;
     case "set_attribute": return `${p.component_id}.${p.key} = ${p.value}`;
+    case "set_dependency_attribute": return `${p.dependency_id}.${p.key} = ${p.value}`;
+    case "set_parameter": return `Parameter ${p.key} = ${p.value}`;
   }
 }
 
-export function summarizeEvent(e: EventDef): string {
-  const what = EVENT_LABELS[e.type] ?? e.type;
+export function summarizeEvent(spec: DomainSpec, e: EventDef): string {
+  const et = eventType(spec, e.type);
+  const what = et?.label ?? e.type;
   const dur = e.duration ? ` for ${e.duration}` : "";
-  const sev = e.type === "traffic_spike" ? ` ×${e.severity}` : "";
+  const sev = et?.severity_label ? ` (${et.severity_label.toLowerCase()} ${e.severity})` : "";
   const prob = e.probability < 1 ? ` (p=${e.probability})` : "";
   return `${what}${sev} on ${e.target_id} at t=${e.start_time}${dur}${prob}`;
 }

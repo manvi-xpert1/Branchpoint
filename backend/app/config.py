@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .decision.model import DecisionModel
 from .models import Event, System
 from .simulation.branching import Intervention, Scenario
 
@@ -16,6 +17,7 @@ class Experiment:
     system: System
     scenarios: list[Scenario]
     until: float
+    objectives: DecisionModel | None = None  # None: the domain's default objectives
 
 
 def load_experiment(data: dict[str, Any]) -> Experiment:
@@ -37,7 +39,9 @@ def load_experiment(data: dict[str, Any]) -> Experiment:
         )
         by_id[scenario.id] = scenario
         scenarios.append(scenario)
-    return Experiment(system=system, scenarios=scenarios, until=float(data.get("until", 30)))
+    objectives = DecisionModel.from_dict(data["objectives"]) if data.get("objectives") else None
+    return Experiment(system=system, scenarios=scenarios, until=float(data.get("until", 30)),
+                      objectives=objectives)
 
 
 def load_experiment_file(path: str | Path) -> Experiment:

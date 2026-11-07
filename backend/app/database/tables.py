@@ -14,11 +14,15 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 JSONType = JSON().with_variant(JSONB(), "postgresql")
+
+# Default for JSON columns added after the baseline, so rows that already
+# exist get an empty object instead of NULL when the migration runs.
+EMPTY_JSON = text("'{}'")
 
 
 def new_id() -> str:
@@ -40,6 +44,11 @@ class SystemRow(Base):
     name: Mapped[str] = mapped_column(String(200))
     domain: Mapped[str] = mapped_column(String(64), default="software_infrastructure")
     description: Mapped[str] = mapped_column(Text, default="")
+    # System-wide variables (e.g. arrival rate, demand multiplier) that
+    # scenarios can change with a set_parameter intervention.
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict, server_default=EMPTY_JSON)
+    # Decision model: {"objectives": [...], "constraints": [...]}; {} means the domain's defaults.
+    objectives: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict, server_default=EMPTY_JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -84,6 +93,8 @@ class DependencyRow(Base):
     dependency_type: Mapped[str] = mapped_column(String(32), default="requires")
     group: Mapped[str | None] = mapped_column(String(100), nullable=True)
     propagation_delay: Mapped[float] = mapped_column(Float, default=0.0)
+    # Domain-specific relationship data: routing probability, travel time, cost, ...
+    attributes: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict, server_default=EMPTY_JSON)
     position: Mapped[int] = mapped_column(Integer, default=0)
 
     system: Mapped[SystemRow] = relationship(back_populates="dependencies")
@@ -135,6 +146,8 @@ class ScenarioEventRow(Base):
     duration: Mapped[float | None] = mapped_column(Float, nullable=True)
     severity: Mapped[float] = mapped_column(Float, default=1.0)
     probability: Mapped[float] = mapped_column(Float, default=1.0)
+    # Domain-specific event settings (e.g. how many staff are unavailable).
+    params: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict, server_default=EMPTY_JSON)
     position: Mapped[int] = mapped_column(Integer, default=0)
 
     scenario: Mapped[ScenarioRow] = relationship(back_populates="events")
@@ -172,6 +185,8 @@ class SimulationRunRow(Base):
     skipped_events: Mapped[list[str]] = mapped_column(JSONType, default=list)
     # component -> [[time, status], ...], used for playback in the UI
     timelines: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    # Numeric values over time: entity -> variable -> [[time, value], ...]
+    series: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict, server_default=EMPTY_JSON)
     elapsed_ms: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

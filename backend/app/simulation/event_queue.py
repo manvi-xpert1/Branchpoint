@@ -14,7 +14,10 @@ EVALUATE = "evaluate"  # re-check a component's status after a dependency change
 
 # At equal times, apply external changes before re-evaluating components,
 # so an evaluation sees everything that happened at that instant.
+# Domains may use their own kinds; those default to the START priority
+# unless the item sets ``priority`` itself.
 _PRIORITY = {END: 0, START: 1, EVALUATE: 2}
+DEFAULT_PRIORITY = 1
 
 
 @dataclass
@@ -25,6 +28,7 @@ class ScheduledEvent:
     event_id: str | None = None  # the external Event this belongs to
     cause_id: int | None = None  # log entry that triggered this (for explanations)
     data: dict[str, Any] = field(default_factory=dict)
+    priority: int | None = None  # overrides the priority of ``kind``
 
 
 class EventQueue:
@@ -40,7 +44,8 @@ class EventQueue:
         self._counter = itertools.count()
 
     def push(self, event: ScheduledEvent) -> None:
-        heapq.heappush(self._heap, (event.time, _PRIORITY[event.kind], next(self._counter), event))
+        priority = event.priority if event.priority is not None else _PRIORITY.get(event.kind, DEFAULT_PRIORITY)
+        heapq.heappush(self._heap, (event.time, priority, next(self._counter), event))
 
     def pop(self) -> ScheduledEvent:
         return heapq.heappop(self._heap)[-1]

@@ -1,9 +1,12 @@
 import { Background, Controls, ReactFlow, ReactFlowProvider } from "@xyflow/react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { CartesianGrid, Legend as ChartLegend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api/client";
-import type { ComponentDef, DependencyDef, LogEntry, ReplayOut, RunOut, Status, SystemDef } from "../api/types";
-import { ErrorNotice, errorMessage, fmt, Metric, pct, StatusPill } from "../components/common";
+import type { ComponentDef, DependencyDef, DomainSpec, LogEntry, ReplayOut, RunOut, Status, SystemDef } from "../api/types";
+import { ErrorNotice, errorMessage, fmt, Metric, StatusPill } from "../components/common";
+import { formatMetric, hasFeature, tone, visibleMetrics } from "../lib/domains";
+import { CHART } from "../lib/theme";
 import { buildEdges, buildNodes, depId, Legend, nodeTypes } from "../components/graph";
 import { freeSpot, layeredLayout, positionsFor, type Point } from "../lib/layout";
 import { causalChain, eventTimes, segments, STATUS_COLORS, statusAt } from "../lib/timeline";
@@ -13,9 +16,9 @@ import { useWorkspace } from "./workspace";
  * Same positions as the designer shows for the saved system. Components a
  * scenario adds (e.g. a replica) go next to the one they copy, or to the right.
  */
-function runPositions(components: ComponentDef[], deps: DependencyDef[], saved: SystemDef): Record<string, Point> {
-  const base = positionsFor(saved.components, saved.dependencies);
-  const auto = layeredLayout(components, deps);
+function runPositions(components: ComponentDef[], deps: DependencyDef[], saved: SystemDef, horizontal: boolean): Record<string, Point> {
+  const base = positionsFor(saved.components, saved.dependencies, {}, horizontal);
+  const auto = layeredLayout(components, deps, horizontal);
   const xs = Object.values(base).map((p) => p.x);
   const maxX = xs.length ? Math.max(...xs) : 0;
   const out: Record<string, Point> = {};
@@ -43,6 +46,8 @@ function peakTime(run: RunOut): number {
 
 function RunView({ run }: { run: RunOut }) {
   const ws = useWorkspace();
+  const spec = ws.spec;
+  const [view, setView] = useState<"graph" | "charts">("graph");
   const [t, setT] = useState(() => peakTime(run));
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -75,8 +80,10 @@ function RunView({ run }: { run: RunOut }) {
   const status = useMemo(() => {
     const out: Record<string, Status> = {};
     for (const c of components) out[c.id] = statusAt(run.timelines[c.id], t);
+    // Routes have their own status in some domains (e.g. a closed road).
+    for (const d of deps) if (run.timelines[depId(d)]) out[depId(d)] = statusAt(run.timelines[depId(d)], t);
     return out;
-  }, [components, run.timelines, t]);
+  }, [components, deps, run.timelines, t]);
 
   const chain = useMemo(() => (selectedSeq === null ? [] : causalChain(run.log, selectedSeq)), [run.log, selectedSeq]);
   const chainComponents = useMemo(
@@ -84,18 +91,22 @@ function RunView({ run }: { run: RunOut }) {
   const chainEdges = useMemo(() => {
     const ids = new Set<string>();
     const comps = chain.filter((e) => e.kind === "status_change").map((e) => e.component_id);
+    const flow = !hasFeature(spec, "propagation_delay");
     for (let i = 1; i < comps.length; i++) {
-      deps.filter((d) => d.source_id === comps[i] && d.target_id === comps[i - 1]).forEach((d) => ids.add(depId(d)));
+      deps.filter((d) => (d.source_id === comps[i] && d.target_id === comps[i - 1])
+        || (flow && d.source_id === comps[i - 1] && d.target_id === comps[i])).forEach((d) => ids.add(depId(d)));
     }
+    chain.forEach((e) => deps.some((d) => depId(d) === e.component_id) && ids.add(e.component_id));
     return ids;
-  }, [chain, deps]);
+  }, [chain, deps, spec]);
 
-  const positions = useMemo(() => runPositions(components, deps, ws.system), [components, deps, ws.system]);
-  const nodes = useMemo(() => buildNodes(components, positions, {
+  const positions = useMemo(() => runPositions(components, deps, ws.system, !hasFeature(spec, "propagation_delay")),
+    [components, deps, ws.system, spec]);
+  const nodes = useMemo(() => buildNodes(spec, components, positions, {
     status,
     flags: Object.fromEntries([...chainComponents].map((id) => [id, ["chain"]])),
-  }).map((n) => ({ ...n, draggable: false, connectable: false })), [components, positions, status, chainComponents]);
-  const edges = useMemo(() => buildEdges(deps, { status, highlight: chainEdges }), [deps, status, chainEdges]);
+  }).map((n) => ({ ...n, draggable: false, connectable: false })), [spec, components, positions, status, chainComponents]);
+  const edges = useMemo(() => buildEdges(spec, deps, { status, highlight: chainEdges }), [spec, deps, status, chainEdges]);
 
   const selectEntry = (e: LogEntry) => {
     setSelectedSeq(e.seq);
@@ -116,8 +127,8 @@ function RunView({ run }: { run: RunOut }) {
     }
   };
 
-  const m = run.metrics;
-  const nonHealthyNow = Object.values(status).filter((s) => s !== "healthy").length;
+  const shown = visibleMetrics(spec, [run.metrics]).filter((d) => d.better !== "neutral" || d.format === "count");
+  const nonHealthyNow = components.filter((c) => status[c.id] !== "healthy").length;
 
   return (
     <div className="split">
@@ -127,7 +138,7 @@ function RunView({ run }: { run: RunOut }) {
             <div>
               <h1>{run.scenario_name}</h1>
               <div className="small muted">
-                Run {run.id} · seed {run.seed} · {run.until} time units · {fmt(run.elapsed_ms)} ms
+                Run {run.id} · seed {run.seed} · {run.until} {spec.time_unit} · {fmt(run.elapsed_ms)} ms
                 {run.skipped_events.length > 0 && <> · probabilistic events that did not occur: {run.skipped_events.join(", ")}</>}
               </div>
             </div>
@@ -145,15 +156,20 @@ function RunView({ run }: { run: RunOut }) {
             </div>
           )}
           <div className="metric-grid" style={{ width: "100%" }}>
-            <Metric label="Availability" value={pct(m.availability)} tone={m.availability < 1 ? "bad" : "ok"} />
-            <Metric label="Downtime" value={fmt(m.downtime)} tone={m.downtime > 0 ? "bad" : undefined} />
-            <Metric label="Degraded time" value={fmt(m.degraded_time)} tone={m.degraded_time > 0 ? "warn" : undefined} />
-            <Metric label="Affected components" value={String(m.affected_components)} />
-            <Metric label="Recovery time" value={m.affected_components === 0 ? "–" : m.recovery_time === null ? "not recovered" : fmt(m.recovery_time)} />
-            <Metric label="Intervention cost" value={fmt(m.cost)} />
+            {shown.map((d) => (
+              <Metric key={d.key} label={d.label} value={formatMetric(d, run.metrics[d.key])} unit={d.format === "percent" ? undefined : d.unit}
+                tone={tone(d, run.metrics[d.key])} hint={d.description} />
+            ))}
           </div>
         </div>
 
+        {run.series && Object.keys(run.series).length > 0 && (
+          <div className="row fixed" style={{ gap: 0, alignSelf: "flex-start" }}>
+            <button className={`seg ${view === "graph" ? "on" : ""}`} onClick={() => setView("graph")}>Graph</button>
+            <button className={`seg ${view === "charts" ? "on" : ""}`} onClick={() => setView("charts")}>Charts over time</button>
+          </div>
+        )}
+        {view === "charts" && run.series ? <SeriesView run={run} spec={spec} t={t} /> : (
         <div className="canvas">
           <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.25, maxZoom: 1.1 }}
             nodesDraggable={false} nodesConnectable={false} elementsSelectable={false}
@@ -162,16 +178,20 @@ function RunView({ run }: { run: RunOut }) {
               if (last) setSelectedSeq(last.seq);
             }}
             proOptions={{ hideAttribution: true }}>
-            <Background gap={20} color="#e5e7eb" />
-            <Controls showInteractive={false} />
+            <Background gap={24} size={1.4} color="rgba(255,226,180,.16)" />
+            <Controls showInteractive={false} position="top-right" />
           </ReactFlow>
-          <div style={{ position: "absolute", left: 12, top: 12, background: "rgba(255,255,255,.92)", padding: "6px 10px", borderRadius: 6 }}>
-            <div className="small"><b>t = {fmt(t)}</b> · {nonHealthyNow === 0 ? "all healthy" : `${nonHealthyNow} component${nonHealthyNow > 1 ? "s" : ""} affected`}</div>
+          <div className="canvas-chip" style={{ left: 12, top: 12 }}>
+            <b>t = {fmt(t)}</b>{" "}
+            <span style={{ color: nonHealthyNow === 0 ? "var(--ok-hi)" : "var(--bad-hi)" }}>
+              {nonHealthyNow === 0 ? "all healthy" : `${nonHealthyNow} affected`}
+            </span>
           </div>
-          <div style={{ position: "absolute", left: 12, bottom: 12, background: "rgba(255,255,255,.9)", padding: "4px 8px", borderRadius: 6 }}>
-            <Legend />
+          <div className="canvas-chip" style={{ left: 12, bottom: 12 }}>
+            <Legend spec={spec} />
           </div>
         </div>
+        )}
 
         <div className="playback">
           <button className="small" onClick={() => step(-1)} title="Previous event">⏮</button>
@@ -232,8 +252,13 @@ function RunView({ run }: { run: RunOut }) {
 
 /** One swimlane per component, coloured by status over time. Click to seek. */
 function Lanes({ run, t, onSeek }: { run: RunOut; t: number; onSeek: (t: number) => void }) {
-  const ids = run.system.components.map((c) => c.id);
-  const name = (id: string) => run.system.components.find((c) => c.id === id)?.name ?? id;
+  const routeIds = run.system.dependencies.map(depId).filter((id) => run.timelines[id]?.some(([, s]) => s !== "healthy"));
+  const ids = [...run.system.components.map((c) => c.id), ...routeIds];
+  const compName = (id: string) => run.system.components.find((c) => c.id === id)?.name ?? id;
+  const name = (id: string) => {
+    const d = run.system.dependencies.find((x) => depId(x) === id);
+    return d ? `${compName(d.source_id)} → ${compName(d.target_id)}` : compName(id);
+  };
   return (
     <div className="lanes" aria-label="Status timeline">
       {ids.map((id) => (
@@ -247,10 +272,64 @@ function Lanes({ run, t, onSeek }: { run: RunOut; t: number; onSeek: (t: number)
             {segments(run.timelines[id] ?? [[0, "healthy"]], run.until).map(([s, end, st], i) => (
               <rect key={i} x={s} y={0} width={end - s} height={1} fill={STATUS_COLORS[st]} opacity={st === "healthy" ? 0.35 : 0.9} />
             ))}
-            <line x1={t} x2={t} y1={0} y2={1} stroke="#111827" strokeWidth={run.until / 400} vectorEffect="non-scaling-stroke" />
+            <line x1={t} x2={t} y1={0} y2={1} stroke="var(--text)" strokeWidth={run.until / 400} vectorEffect="non-scaling-stroke" />
           </svg>
         </div>
       ))}
+    </div>
+  );
+}
+
+const SERIES_LABELS: Record<string, string> = {
+  queue: "Patients waiting", in_use: "Beds / staff in use", inventory: "Stock on hand", load: "Load", latency: "End-to-end latency",
+};
+
+/** Line charts of the run's time series (queues, stock, load ...), with the playback time marked. */
+function SeriesView({ run, spec, t }: { run: RunOut; spec: DomainSpec; t: number }) {
+  const variables = Object.keys(run.series ?? {});
+  const [variable, setVariable] = useState(variables[0]);
+  const byEntity = run.series?.[variable] ?? {};
+  const entities = Object.keys(byEntity);
+  const name = (id: string) => run.system.components.find((c) => c.id === id)?.name ?? id;
+  // Merge the entities' points into rows keyed by time (all series share sampling times in practice).
+  const data = useMemo(() => {
+    const rows = new Map<number, Record<string, number | null>>();
+    for (const [id, points] of Object.entries(byEntity)) {
+      for (const [time, value] of points) {
+        const row = rows.get(time) ?? { time };
+        row[id] = value;
+        rows.set(time, row);
+      }
+    }
+    return [...rows.values()].sort((a, b) => (a.time as number) - (b.time as number));
+  }, [byEntity]);
+  return (
+    <div className="canvas chart-stage">
+      <div className="row" style={{ padding: "12px 16px 0", justifyContent: "flex-start" }}>
+        <span className="small fixed" style={{ color: "var(--on-dark-muted)" }}>Show</span>
+        <select className="fixed" style={{ width: 220 }} aria-label="Time series" value={variable}
+          onChange={(e) => setVariable(e.target.value)}>
+          {variables.map((v) => <option key={v} value={v}>{SERIES_LABELS[v] ?? v}</option>)}
+        </select>
+        <span className="small fixed" style={{ color: "var(--on-dark-muted)" }}>sampled over {run.until} {spec.time_unit}</span>
+      </div>
+      <div style={{ position: "absolute", inset: "56px 12px 12px 0" }}>
+        <ResponsiveContainer>
+          <LineChart data={data} margin={{ left: 10, right: 20, top: 10, bottom: 10 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke={CHART.grid} />
+            <XAxis dataKey="time" type="number" domain={[0, run.until]} tick={{ fontSize: 12, fill: CHART.axis }} stroke={CHART.axis} />
+            <YAxis tick={{ fontSize: 12, fill: CHART.axis }} stroke={CHART.axis} width={50} />
+            <Tooltip contentStyle={CHART.tooltip} labelFormatter={(l) => `t = ${fmt(Number(l), 1)}`} />
+            <ChartLegend wrapperStyle={{ fontSize: 12, color: CHART.cream }} />
+            <ReferenceLine x={t} stroke={CHART.cream} strokeDasharray="4 3" />
+            {entities.map((id, i) => (
+              <Line key={id} dataKey={id} name={name(id)} type={variable === "inventory" ? "stepAfter" : "linear"}
+                stroke={CHART.series[i % CHART.series.length]} dot={false} strokeWidth={2} isAnimationActive={false}
+                connectNulls={false} />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }

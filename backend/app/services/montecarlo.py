@@ -73,8 +73,16 @@ def to_schema(row: MonteCarloRunRow) -> MonteCarloOut:
         base_seed=row.base_seed,
         until=row.until,
         deterministic=s["deterministic"],
-        aggregates=MonteCarloAggregates(**s["aggregates"]),
-        downtimes=s["downtimes"],
+        aggregates=MonteCarloAggregates(**s["aggregates"]) if s.get("aggregates") else None,
+        downtimes=s.get("downtimes", []),
         elapsed_ms=row.elapsed_ms,
         created_at=row.created_at,
+        # Batches stored before Phase 3 have only the downtime summary.
+        domain=s.get("domain", "software_infrastructure"),
+        risk_metric=s.get("risk_metric", "downtime"),
+        risk_values=s.get("risk_values", s.get("downtimes", [])),
+        event_frequency=s.get("event_frequency", (s.get("aggregates") or {}).get("event_frequency", {})),
+        metric_stats=s.get("metric_stats", {}),
+        risk=s.get("risk"),
+        drivers=s.get("drivers", []),
     )

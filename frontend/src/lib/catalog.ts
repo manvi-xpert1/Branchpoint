@@ -8,18 +8,19 @@ export interface ComponentKind {
 }
 
 export const COMPONENT_KINDS: ComponentKind[] = [
-  { type: "gateway", label: "API Gateway", short: "GW", color: "#6366f1", defaults: { capacity: 1000, current_load: 600 } },
-  { type: "service", label: "Service", short: "SV", color: "#0ea5e9", defaults: { capacity: 800, current_load: 400 } },
-  { type: "database", label: "Database", short: "DB", color: "#a855f7", defaults: { capacity: 1000, current_load: 600, recovery_time: 10 } },
-  { type: "cache", label: "Cache", short: "CA", color: "#f97316", defaults: { capacity: 5000, current_load: 1000 } },
-  { type: "queue", label: "Queue", short: "QU", color: "#14b8a6", defaults: { capacity: 2000, current_load: 500 } },
-  { type: "external", label: "External API", short: "EX", color: "#64748b", defaults: {} },
+  // Badge colours: light tints that read on the dark teal graph stage, with dark text.
+  { type: "gateway", label: "API Gateway", short: "GW", color: "#E9B85A", defaults: { capacity: 1000, current_load: 600 } },
+  { type: "service", label: "Service", short: "SV", color: "#8FB8E0", defaults: { capacity: 800, current_load: 400 } },
+  { type: "database", label: "Database", short: "DB", color: "#CFA6E6", defaults: { capacity: 1000, current_load: 600, recovery_time: 10 } },
+  { type: "cache", label: "Cache", short: "CA", color: "#F59A3E", defaults: { capacity: 5000, current_load: 1000 } },
+  { type: "queue", label: "Queue", short: "QU", color: "#EBD48F", defaults: { capacity: 2000, current_load: 500 } },
+  { type: "external", label: "External API", short: "EX", color: "#C9AE85", defaults: {} },
 ];
 
 export function kindOf(type: string): ComponentKind {
   return (
     COMPONENT_KINDS.find((k) => k.type === type) ?? {
-      type, label: type, short: type.slice(0, 2).toUpperCase(), color: "#64748b", defaults: {},
+      type, label: type, short: type.slice(0, 2).toUpperCase(), color: "#C9AE85", defaults: {},
     }
   );
 }

@@ -22,6 +22,8 @@ class System:
     description: str = ""
     components: dict[str, Component] = field(default_factory=dict)
     dependencies: list[Dependency] = field(default_factory=list)
+    # System-wide variables (e.g. arrival rate) that scenarios can change.
+    parameters: dict[str, Any] = field(default_factory=dict)
 
     # ---- construction -------------------------------------------------
     def add_component(self, component: Component) -> None:
@@ -73,6 +75,7 @@ class System:
             name=data.get("name", data.get("id", "system")),
             domain=data.get("domain", "software_infrastructure"),
             description=data.get("description", ""),
+            parameters=dict(data.get("parameters") or {}),
         )
         for c in data.get("components", []):
             system.add_component(Component.from_dict(c))
@@ -89,4 +92,5 @@ class System:
             "description": self.description,
             "components": [c.to_dict() for c in self.components.values()],
             "dependencies": [d.to_dict() for d in self.dependencies],
+            "parameters": self.parameters,
         }

@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from .api import scenarios, simulations, systems
+from .api import decisions, domains, scenarios, simulations, systems
 from .database import Database
 from .services.errors import ServiceError
 
@@ -25,15 +25,16 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # Fine for V1. Switch to Alembic migrations once the schema settles.
+        # Applies any pending Alembic migrations (creates the tables on a new database).
         db.create_tables()
         yield
         db.engine.dispose()
 
     app = FastAPI(
         title="Branchpoint API",
-        version="0.2.0",
-        description="Model systems, inject failures, branch scenarios and compare outcomes.",
+        version="0.3.0",
+        description="Explore alternative futures and make better decisions: model a system, branch "
+                    "scenarios, simulate them, and score the outcomes against your objectives.",
         lifespan=lifespan,
     )
     app.state.db = db
@@ -53,7 +54,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
     def health() -> dict:
         return {"status": "ok"}
 
-    for module in (systems, scenarios, simulations):
+    for module in (domains, systems, scenarios, simulations, decisions):
         app.include_router(module.router, prefix="/api")
     _serve_frontend(app)
     return app
